@@ -1,0 +1,17 @@
+figures
+results
+*.csv
+data/
+**.RDS
+**.html
+**.Rmd
+.DS_Store
+._.*
+._*
+
+manuscript/*
+output/*
+*.tar
+.vscode
+*slurm_out
+.Rprofile
