@@ -42,6 +42,7 @@ dependencies:
   - r-pbapply
   - r-caret
   - r-languageserver
-  - r-hmisc
+  - r-plotroc
+  - r-mleval
+  - r-mlmetrics
   - r-argparse
-
