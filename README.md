@@ -4,7 +4,7 @@ This repository holds the code for all analyses related to
 
 > t.b.a
 
-Our pipeline(SPoTLIghT) to derive spatial graph-based interpretable features from H&E tissue slides is packaged as a docker container, which is available here: 
+Our pipeline (SPoTLIghT) to derive spatial graph-based interpretable features from H&E tissue slides is packaged as a docker container, which is available here: 
 https://github.com/SysBioOncology/spotlight_docker.
 
 ### Notebook to reproduce the figures from the manuscript
@@ -13,8 +13,8 @@ https://github.com/SysBioOncology/spotlight_docker.
 
 # First, activate conda environment
 
-conda env create -f spotlight.yml
-conda activate spotlight
+conda env create -f spatial_features.yml
+conda activate spatial_features
 
 # Second, render the notebook
 
