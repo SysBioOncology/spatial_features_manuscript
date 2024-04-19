@@ -1,7 +1,8 @@
 figures
 results
 *.csv
-data/
+data/mmc1.xlsx
+data/mmc6.xlsx
 **.RDS
 **.html
 **.Rmd
