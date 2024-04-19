@@ -280,7 +280,7 @@ dependencies:
   - r-rio=1.0.1=r43hc72bb7e_0
   - r-rjson=0.2.21=r43h64b2c41_3
   - r-rlang=1.1.2=r43h64b2c41_0
-  - r-rmarkdown=2.25=r43hc72bb7e_0
+  - r-rmarkdown=2.26=r43hc72bb7e_0
   - r-rocr=1.0_11=r43hbe3e9c8_3
   - r-rpart=4.1.23=r43hb2c329c_0
   - r-rstatix=0.7.2=r43hc72bb7e_1
