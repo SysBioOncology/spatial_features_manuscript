@@ -16,3 +16,7 @@ output/*
 .vscode
 *slurm_out
 .Rprofile
+
+.lintr
+.Renviron
+.vscode

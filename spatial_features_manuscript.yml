@@ -1,0 +1,18 @@
+name: spatial_features_manuscript
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-glmnet
+  - r-proc
+  - r-prroc
+  - r-ggplot2
+  - r-caret
+  - radian 
+  - python
+  - r-httpgd
+  - r-languageserver
+  - r-styler
+  - r-lintr
+  - r-jsonlite
+  - r-sessioninfo
