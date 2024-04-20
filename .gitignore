@@ -1,21 +1,7 @@
-figures
-results
-*.csv
-data/mmc1.xlsx
-data/mmc6.xlsx
-**.RDS
-**.html
-**.Rmd
+
 .DS_Store
 ._.*
 ._*
-
-manuscript/*
-output/*
-*.tar
-.vscode
-*slurm_out
-.Rprofile
 
 .lintr
 .Renviron
