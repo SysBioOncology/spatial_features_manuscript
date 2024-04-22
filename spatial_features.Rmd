@@ -1,0 +1,871 @@
+---
+title: "Notebook to reproduce manuscript figures"
+params:
+    spatial_features_dir: "./data/features_tcga_skcm_ff"
+    tcga_bagaev_subtypes: bagaev_file
+    tcga_survival: tcga_survival_file
+    bootstrap_model: "./data/bootstrap_model.RData"
+output: html_document
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE, message=FALSE}
+
+# survival_tcga_liu: "./data/mmc6.xlsx",  tcga_survival: "./data/mmc1.xlsx"
+
+# packages
+suppressPackageStartupMessages({
+  library('dplyr')
+  library("corrplot")
+  library("gplots")
+  library("RColorBrewer")
+  library("Matrix")
+  library("ggplot2")
+  library('ggforce')
+  library("ggpubr")
+  library("reshape2")
+  library("ggrepel")
+  library('tidyr')
+  library('plyr')
+  library('purrr')
+  library('gridExtra')
+  library('rstatix')
+  library('ComplexHeatmap')
+  library('survival')
+  library('ggfortify')
+  library('survminer')
+})
+
+colors_mfp <- c("#64a860", "#9970c1", "#cc545e", "#b98d3e")
+names(colors_mfp) <- c("D", "F", "IE/F", "IE")
+
+# change default settings to fit plots
+knitr::opts_chunk$set(fig.height = 8, fig.width = 14)
+
+# Read TCGA-SKCM features ------------------------------------------------------
+
+tcga_mat <- data.table::fread(file = "./data/spatial_features_matrix_TCGA.csv")
+tcga_mat <- tcga_mat %>% tibble::column_to_rownames(var = "V1")
+
+# Read CPTAC-CM features ------------------------------------------------------
+
+cptac_mat <- data.table::fread(file = "./data/spatial_features_matrix_CPTAC.csv")
+cptac_mat <- cptac_mat %>% tibble::column_to_rownames(var = "V1")
+
+# Read Bagaev subtypes for TCGA data -------------------------------------------
+bagaev_file = "./data/MFP.xlsx"
+# params$tcga_bagaev_subtypes
+bagaev_mfp <- readxl::read_xlsx(path = bagaev_file, sheet = 1, skip = 1)
+bagaev_mfp <- bagaev_mfp %>% filter(Cohort == "TCGA-SKCM")
+colnames(bagaev_mfp)[1] <- "TCGA_patient_ID"
+
+# Read Survival data for TCGA data -------------------------------------------
+tcga_survival_file = "./data/survival.xlsx"
+# params$tcga_survival
+survival_tcga_liu <- readxl::read_xlsx(path = tcga_survival_file, sheet = 1)
+
+```
+
+Figure 1B
+
+Cell type-specific probability maps for four examples of melanoma slides from distinct microenvironments: immune-depleted (D), fibrotic (F), immune-enriched fibrotic (IE/F) and immune-enriched (IE) subtypes. 
+
+** Note that the full slide is shown here. **
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 22, fig.height = 22}
+
+## Read cell type probabilities
+cell_prob <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "tcga_validation_tile_predictions_proba.csv"), 
+                   sep = "\t")
+
+## Pivot to long df
+cell_prob <- cell_prob %>% 
+  select(slide_submitter_id, CAFs, T_cells, endothelial_cells, tumor_purity, Coord_X, Coord_Y) %>%
+  pivot_longer(cols = !c(slide_submitter_id, Coord_X, Coord_Y), 
+               names_to = "celltype", values_to = "prob")
+
+## Add bagaev subtypes data
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+cell_prob$TCGA_patient_ID <- substr(cell_prob$slide_submitter_id,1,12)
+cell_prob <- inner_join(cell_prob, tmp, by = "TCGA_patient_ID") 
+
+## Desert
+D_example <- 'TCGA-YG-AA3P' 
+# TCGA-Z2-AA3S
+# TCGA-D3-A8GL
+
+## Fibrotic
+F_example <- 'TCGA-EE-A3JB'
+# TCGA-D3-A2JA
+# TCGA-FR-A2OS
+
+## Immune-enrinched fibrotic
+IEF_example <- 'TCGA-EE-A2ME' # IE/F 
+# TCGA-FS-A1ZH
+# TCGA-D3-A1Q3
+
+## Immune-enrinched
+IE_example <- 'TCGA-ER-A1A1'
+# TCGA-D3-A8GM
+# TCGA-WE-A8K4
+
+## Visualize selected slides ##
+examples <- c(D_example, F_example, IEF_example, IE_example)
+
+gg_maps <- lapply(examples, function(X){
+  
+  example <- cell_prob %>% filter(TCGA_patient_ID %in% X)
+  
+  # split data for each "facet"
+  df <- split(example, f = example$celltype)
+  
+  plot_CAFs <- df$CAFs %>%
+  ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+  geom_tile(color="white") +
+  scale_fill_distiller(palette="Greens", direction=1, name = "Prob", limits=c(0,1)) +
+  theme_void() +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        legend.title = element_text(size=16, color = "black"),
+        legend.text = element_text(size=16, color = "black")) +
+  coord_fixed(1)
+
+plot_endo <- df$endothelial_cells %>%
+  ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+  #geom_point(size = 2.5, shape=15) +
+  geom_tile(color="white") +
+  scale_fill_distiller(palette="Purples", direction=1, name = "Prob", limits=c(0,1)) +
+  theme_void() +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        legend.title = element_text(size=16, color = "black"),
+        legend.text = element_text(size=16, color = "black")) +
+  coord_fixed(1)
+
+plot_tcells <- df$T_cells %>%
+  ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+  #geom_point(size = 2.5, shape=15) +
+  geom_tile(color="white") +
+  scale_fill_distiller(palette="Blues", direction=1, name = "Prob", limits=c(0,1)) +
+  theme_void() +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        legend.title = element_text(size=16, color = "black"),
+        legend.text = element_text(size=16, color = "black")) +
+  coord_fixed(1)
+
+plot_tumor <- df$tumor_purity %>%
+  ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+  #geom_point(size = 2.5, shape=15) +
+  geom_tile(color="white") +
+  scale_fill_distiller(palette="Reds", direction=1, name = "Prob", limits=c(0,1)) +
+  theme_void() +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        legend.title = element_text(size=16, color = "black"),
+        legend.text = element_text(size=16, color = "black")) +
+  coord_fixed(1)
+
+  if (X == examples[4]){
+  
+    ggarrange(plot_CAFs, plot_endo, plot_tcells, plot_tumor, 
+              nrow = 4, ncol = 1, align = "v")
+
+  }else{
+    
+    ggarrange(plot_CAFs, plot_endo, plot_tcells, plot_tumor, 
+              nrow = 4, ncol = 1, align = "v", legend = "none")
+  }
+
+})
+
+ggarrange(gg_maps[[1]], 
+          gg_maps[[2]], 
+          gg_maps[[3]], 
+          gg_maps[[4]], nrow = 1, ncol = 4, align = "h", common.legend = TRUE)
+
+```
+
+Figure 2
+
+Slide-level quantification of each cell type
+Co-localization assessment of cell type pairs across the distinct microenvironment subtypes 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 12, fig.height = 12}
+
+# Cell type probability -------------------------------------------
+
+## Calculate median probability for each slide
+cell_prob_mean <- cell_prob %>%
+  dplyr::group_by(TCGA_patient_ID, celltype, MFP) %>% 
+  dplyr::summarise(mean_prob=mean(prob))
+
+cell_prob_mean$MFP <- factor(cell_prob_mean$MFP, levels=c("D", "F", "IE/F", "IE"))
+cell_prob_mean <- cell_prob_mean %>% ungroup()
+
+## Pairwise statistical test #
+stat.test <- cell_prob_mean %>%
+  group_by(celltype) %>%
+  wilcox_test(mean_prob ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "celltype", group = "MFP") %>%
+  filter(!p.adj.signif == "ns")
+
+## Add factor levels
+cell_prob_mean$celltype <- factor(cell_prob_mean$celltype, 
+                                  levels = c("CAFs", "endothelial_cells", 
+                                             "T_cells", "tumor_purity"))
+
+## Plot
+bxp_prob <- ggpubr::ggboxplot(
+  cell_prob_mean, x = "celltype", y = "mean_prob",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.8, jitter = 0.08)
+  ) +
+  scale_x_discrete(labels= c("CAFs", "Endo cells", "T cells", "Tumor cells")) +
+  theme_minimal() +
+  theme(axis.text = element_text(size=16, color = "black"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=16, color = "black"), 
+        legend.position = "top", legend.direction = "horizontal", 
+        legend.title = element_text(size=16, color = "black"),
+        legend.text = element_text(size=16, color = "black")) +
+  labs(y = "Mean probability")
+
+fig2a <- bxp_prob + 
+  stat_pvalue_manual(test_subtypes, label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+
+# Cell type co-localization -------------------------------------------
+
+cell_coloc <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_coloc_fraction.csv"), 
+                   sep = "\t")
+
+## Change cell-type names
+cell_coloc <- cell_coloc %>%
+  mutate(pair=gsub("T_cells", "Tcell", pair))
+cell_coloc <- cell_coloc %>%
+  mutate(pair=gsub("endothelial_cells", "Endo", pair))
+cell_coloc <- cell_coloc %>%
+  mutate(pair=gsub("tumor_purity", "Tumor", pair))
+cell_coloc <- cell_coloc %>%
+  mutate(pair=gsub("CAFs", "CAF", pair))
+
+## Add Bagaev subtypes
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+cell_coloc$TCGA_patient_ID <- substr(cell_coloc$slide_submitter_id,1,12)
+cell_coloc <- inner_join(cell_coloc, tmp, by = "TCGA_patient_ID") 
+cell_coloc$MFP <- factor(cell_coloc$MFP, levels=c("D", "F", "IE/F", "IE"))
+
+cell_coloc$pair <- factor(cell_coloc$pair, levels = c("CAF-Endo", "CAF-Tcell", "CAF-Tumor",
+                                                      "Endo-Tumor", "Tcell-Endo", "Tcell-Tumor"))
+## Pairwise statistical test
+stat.test <- cell_coloc %>%
+  group_by(pair) %>%
+  wilcox_test(frac ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "pair", group = "MFP") %>%
+  filter(!p.adj.signif == "ns")
+
+## Add factor levels
+cell_coloc$pair <- factor(cell_coloc$pair, levels = unique(test_subtypes$pair))
+
+## Plot
+bxp_coloc <- ggpubr::ggboxplot(
+  cell_coloc, x = "pair", y = "frac",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.8, jitter = 0.08)
+  ) +
+  theme_minimal() +
+  theme(axis.text = element_text(size=16, angle = 45, hjust = 1, color = "black"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=16, color = "black"), 
+        legend.position = "top", legend.direction = "horizontal", 
+        legend.title = element_text(size=16, color = "black"),
+        legend.text = element_text(size=16, color = "black")) +
+  labs(y = "Co-localization")
+
+fig2b <- bxp_coloc + 
+  stat_pvalue_manual(test_subtypes, label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+
+ggarrange(fig2a, 
+          fig2b, nrow = 1, ncol = 2, align = "h", common.legend = TRUE)
+
+```
+
+Figure 4
+
+Number of shortest paths with maximum path length equal to two (SP2).
+Size of the largest connected component (LCC) 
+Proximity between cell type-specific clusters classified as highly or lowly abundant.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 12, fig.height = 12}
+
+# Cell type SP2 -------------------------------------------
+
+SP2 <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_shortest_paths_thresholded.csv"), 
+                   sep = "\t")
+
+SP2 <- SP2 %>% 
+  dplyr::mutate(TCGA_patient_ID= substr(slide_submitter_id, 1, 12)) %>%
+  dplyr::rename('celltype_pair' = 'pair')
+
+# Change cell-type names
+SP2 <- SP2 %>%
+  mutate(celltype_pair=gsub("T_cells", "Tcell", celltype_pair))
+SP2 <- SP2 %>%
+  mutate(celltype_pair=gsub("endothelial_cells", "Endo", celltype_pair))
+SP2 <- SP2 %>%
+  mutate(celltype_pair=gsub("tumor_purity", "Tumor", celltype_pair))
+SP2 <- SP2 %>%
+  mutate(celltype_pair=gsub("CAFs", "CAF", celltype_pair))
+
+# Add MFP data
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+SP2$TCGA_patient_ID <- substr(SP2$slide_submitter_id,1,12)
+SP2 <- inner_join(SP2, tmp, by = "TCGA_patient_ID") 
+SP2$MFP <- factor(SP2$MFP, levels=c("D", "F", "IE/F", "IE"))
+
+## Pairwise statistical test
+stat.test <- SP2 %>%
+  group_by(celltype_pair) %>%
+  wilcox_test(n_paths ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "celltype_pair", group = "MFP") %>%
+  filter(!p.adj.signif == "ns")
+
+SP2$celltype_pair <- factor(SP2$celltype_pair,
+                            levels = unique(test_subtypes$celltype_pair))
+
+## Plot
+bxpSP2 <- ggpubr::ggboxplot(
+  SP2, x = "celltype_pair", y = "n_paths",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.8, jitter = 0.08)
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size=16, color = "black"),
+        axis.text.x = element_text(size=16, color = "black", angle = 45, vjust = 1, hjust = 1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=16, color = "black"), 
+        legend.position = "top", legend.direction = "horizontal") +
+  labs(y = "SP2")
+
+Fig4a <- bxpSP2 + 
+  stat_pvalue_manual(test_subtypes, label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+
+# Cell type LCC -------------------------------------------
+
+LCC <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_lcc_fraction.csv"), 
+                   sep = "\t")
+
+## Pivot to longer
+LCC <- LCC %>% 
+  pivot_longer(cols = !c("slide_submitter_id"), names_to = "celltype" , values_to = "LCC")
+
+## Change cell-type names
+LCC <- LCC %>%
+  mutate(celltype=gsub(".clusters", "", celltype))
+LCC <- LCC %>%
+  mutate(celltype=gsub("T.cells", "Tcell", celltype))
+LCC <- LCC %>%
+  mutate(celltype=gsub("endothelial.cells", "Endo", celltype))
+LCC <- LCC %>%
+  mutate(celltype=gsub("tumor.purity", "Tumor", celltype))
+LCC <- LCC %>%
+  mutate(celltype=gsub("CAFs", "CAF", celltype))
+LCC <- LCC %>%
+  mutate(celltype=gsub("LCC.", "", celltype))
+
+## Add Bagev subtypes
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+LCC$TCGA_patient_ID <- substr(LCC$slide_submitter_id,1,12)
+LCC <- inner_join(LCC, tmp, by = "TCGA_patient_ID") 
+LCC$MFP <- factor(LCC$MFP, levels=c("D", "F", "IE/F", "IE"))
+
+## Factor levels
+LCC$celltype <- factor(LCC$celltype, levels = c("CAF", "Endo", "Tcell", "Tumor"))
+
+## Pairwise statistical test
+stat.test <- LCC %>%
+  group_by(celltype) %>%
+  wilcox_test(LCC ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "celltype", group = "MFP") %>%
+  filter(!p.adj.signif == "ns")
+
+LCC$celltype <- factor(LCC$celltype, levels = unique(test_subtypes$celltype))
+
+# Create a box plot
+bxp_LCC <- ggpubr::ggboxplot(
+  LCC, x = "celltype", y = "LCC",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.8, jitter = 0.08)
+  ) +
+  theme_minimal() +
+  scale_x_discrete(labels= c("CAFs", "Endo cells", "T cells", "Tumor cells")) +
+  theme(axis.text.y = element_text(size=16, color = "black"),
+        axis.text.x = element_text(size=16, color = "black", angle = 0),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=16, color = "black"), 
+        legend.position = "top", legend.direction = "horizontal") +
+  labs(y = "LCC")
+
+Fig4b <- bxp_LCC + 
+  stat_pvalue_manual(test_subtypes, label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+
+# Cell type Proximity of clusters -------------------------------------------
+
+prox_clust <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_clust_indiv_schc_prox.csv"), 
+                   sep = "\t")
+
+## Add Bagaev subtypes
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+prox_clust$TCGA_patient_ID <- substr(prox_clust$slide_submitter_id,1,12)
+prox_clust <- inner_join(prox_clust, tmp, by = "TCGA_patient_ID")
+
+prox_clust <- prox_clust %>%
+  dplyr::rename(pair = `pair (comparison)`) %>%
+  dplyr::select(slide_submitter_id, pair, proximity, TCGA_patient_ID, MFP)
+
+prox_clust <- prox_clust %>%
+  mutate(pair=gsub("tumor_purity", "Tumor", pair))
+prox_clust <- prox_clust %>%
+  mutate(pair=gsub("CAFs", "CAF", pair))
+prox_clust <- prox_clust %>%
+  mutate(pair=gsub("endothelial_cells", "Endo", pair))
+prox_clust <- prox_clust %>%
+  mutate(pair=gsub("T_cells", "Tcell", pair))
+
+prox_clust <- prox_clust[-grep("(low-low)", prox_clust$pair), ]
+prox_clust$pair <- gsub("high", "H", prox_clust$pair)
+prox_clust$pair <- gsub("low", "L", prox_clust$pair)
+
+newlevels <- c("CAF-CAF (L-H)", "CAF-CAF (H-H)",
+               "CAF-Endo (L-H)", "CAF-Endo (H-H)",  "CAF-Endo (H-L)", 
+               "CAF-Tcell (L-H)", "CAF-Tcell (H-H)", "CAF-Tcell (H-L)",
+               "CAF-Tumor (L-H)", "CAF-Tumor (H-H)",  "CAF-Tumor (H-L)",
+               "Endo-Endo (L-H)", "Endo-Endo (H-H)", 
+               "Tcell-Endo (L-H)", "Tcell-Endo (H-H)", "Tcell-Endo (H-L)",
+               "Endo-Tumor (L-H)", "Endo-Tumor (H-H)", "Endo-Tumor (H-L)",
+               "Tcell-Tcell (L-H)", "Tcell-Tcell (H-H)",
+               "Tcell-Tumor (L-H)", "Tcell-Tumor (H-H)", "Tcell-Tumor (H-L)",
+               "Tumor-Tumor (L-H)", "Tumor-Tumor (H-H)")
+
+prox_clust$pair <- factor(prox_clust$pair, levels = newlevels)
+
+## Pairwise statistical test
+stat.test <- prox_clust %>%
+  group_by(pair) %>%
+  wilcox_test(proximity ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "pair", group = "MFP") 
+
+## Factor levels
+prox_clust$pair <- factor(prox_clust$pair, levels = unique(test_subtypes$pair))
+
+## Plot
+bxp_prox_clust <- ggpubr::ggboxplot(
+  prox_clust, x = "pair", y = "proximity",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.4, jitter = 0.08)
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size=16, color = "black"),
+        axis.text.x = element_text(size=16, color = "black", angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=16, color = "black"), 
+        legend.position = "top", legend.direction = "horizontal") +
+  labs(y = "Proximity of clusters")
+
+Fig4c <- bxp_prox_clust + 
+  stat_pvalue_manual(subset(test_subtypes, !p.adj.signif == "ns"),
+                     label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+
+## Combine first two panels
+pt_1 <- ggarrange(Fig4a, 
+                  Fig4b, nrow = 1, ncol = 2, align = "v", widths = c(1, 1),
+                  common.legend = TRUE)
+
+## Combine last panel
+ggarrange(pt_1, 
+          Fig4c, nrow = 2, ncol = 1, align = "v", widths = c(0.5, 1),
+          legend = "none")
+
+```
+
+Figure 6
+
+Two slides classified as IE subtypes
+Two slides classified as F subtypes which were predicted to have similar cell type abundance
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 22, fig.height = 22}
+
+cell_prob$sample_submitter_id <- cell_prob$Section <- cell_prob$tile_ID <- NULL
+
+## Combine cell types
+combined_cell_prob <- cell_prob %>% 
+  dplyr::group_by(slide_submitter_id, Coord_X, Coord_Y, celltype, MFP) %>%
+  dplyr::summarise(prob_logic = prob > 0.5) %>%
+  dplyr::mutate(celltype = ifelse(prob_logic, celltype, "other"))
+
+## Change cell-type names
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype=gsub("T_cells", "Tcell", celltype))
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype=gsub("endothelial_cells", "Endo", celltype))
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype=gsub("tumor_purity", "Tumor", celltype))
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype=gsub("CAFs", "CAF", celltype))
+
+combined_cell_prob$TCGA_patient_ID <- substr(combined_cell_prob$slide_submitter_id, 1, 12)
+
+combined_cell_prob <- combined_cell_prob %>%
+  dplyr::group_by(slide_submitter_id, Coord_X, Coord_Y) %>%
+  dplyr::summarise(celltype_combo = celltype[prob_logic]) %>%
+  dplyr::group_by(slide_submitter_id, Coord_X, Coord_Y) %>%
+  dplyr::summarise(celltype_combo = paste(celltype_combo, collapse = "&"))
+
+## Two IE slides ---
+IE_A <- "TCGA-BF-AAP4-01A-01-TS1" # scattered
+IE_B <- "TCGA-EE-A2MD-06A-01-TSA" # confined
+
+## Two FF ---
+F_A <- "TCGA-D3-A1Q8-06A-01-TSA" # 0.53 0.53 0.53 0.47
+F_B <- "TCGA-ER-A19D-06A-01-TSA" # 0.56 0.51 0.51 0.40
+
+colors <- c("darkgreen", "darkblue", "darkorange", "salmon", "darkred",
+            "goldenrod", "gray")
+
+names(colors) <- c("CAF", "Tcell", "CAF&Tcell", "Tcell&Tumor", "Tumor", 
+                   "CAF&Tcell&Endo", "other")
+
+sel_celltypes <-  c("Tcell", "CAF&Tcell", "CAF", "Tcell&Tumor", "CAF&Tcell&Endo", "Tumor")
+
+combined_cell_prob <- combined_cell_prob %>%
+  dplyr::mutate(celltype_combo_plot = ifelse(celltype_combo %in% sel_celltypes, 
+                                               celltype_combo, "other"))
+
+examples <- c(IE_A, IE_B, F_A, F_B)
+gg_maps <- lapply(examples, function(X){
+  
+  example <- cell_prob %>% filter(TCGA_patient_ID %in% substr(X,1,12))
+  
+  # split data for each "facet"
+  df <- split(example, f = example$celltype)
+  
+  plot_CAFs <- df$CAFs %>%
+    ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+    geom_tile(color="white") +
+    scale_fill_distiller(palette="Greens", direction=1, name = "Prob", limits=c(0,1)) +
+    theme_void() +
+    facet_grid(. ~ slide_submitter_id) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          legend.title = element_text(size=16, color = "black"),
+          legend.text = element_text(size=16, color = "black")) +
+    coord_fixed(1)
+  
+  plot_endo <- df$endothelial_cells %>%
+    ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+    #geom_point(size = 2.5, shape=15) +
+    geom_tile(color="white") +
+    scale_fill_distiller(palette="Purples", direction=1, name = "Prob", limits=c(0,1)) +
+    theme_void() +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          legend.title = element_text(size=16, color = "black"),
+          legend.text = element_text(size=16, color = "black")) +
+    coord_fixed(1)
+  
+  plot_tcells <- df$T_cells %>%
+    ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+    #geom_point(size = 2.5, shape=15) +
+    geom_tile(color="white") +
+    scale_fill_distiller(palette="Blues", direction=1, name = "Prob", limits=c(0,1)) +
+    theme_void() +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          legend.title = element_text(size=16, color = "black"),
+          legend.text = element_text(size=16, color = "black")) +
+    coord_fixed(1)
+  
+  plot_tumor <- df$tumor_purity %>%
+    ggplot(aes(x=Coord_X, y=-Coord_Y, fill=prob)) +
+    #geom_point(size = 2.5, shape=15) +
+    geom_tile(color="white") +
+    scale_fill_distiller(palette="Reds", direction=1, name = "Prob", limits=c(0,1)) +
+    theme_void() +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          legend.title = element_text(size=16, color = "black"),
+          legend.text = element_text(size=16, color = "black")) +
+    coord_fixed(1)
+  
+  plot_combined <- combined_cell_prob %>%
+    filter(slide_submitter_id %in% X) %>%
+    ggplot(aes(x=Coord_X, y=-Coord_Y, fill=celltype_combo_plot)) +
+    #geom_point(size = 2.5, shape=15) +
+    geom_tile(color="white") +
+    scale_fill_manual(values=colors, labels = names(colors)) +
+    theme_void() +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          legend.title = element_text(size=16, color = "black"),
+          legend.text = element_text(size=16, color = "black")) +
+    coord_fixed(1) +
+    labs(fill = "Assigned cell type")
+
+  if (X == examples[4]){
+    
+    ggarrange(plot_CAFs, plot_endo, plot_tcells, plot_tumor, plot_combined, 
+            nrow = 5, ncol = 1, align = "v")
+  }else{
+    
+    ggarrange(plot_CAFs, plot_endo, plot_tcells, plot_tumor, plot_combined, 
+            nrow = 5, ncol = 1, align = "v", legend = "none")
+  }
+  
+})
+
+ggarrange(gg_maps[[1]], 
+          gg_maps[[2]], 
+          gg_maps[[3]], 
+          gg_maps[[4]], nrow = 1, ncol = 4, align = "h", common.legend = FALSE)
+
+```
+
+Figure 5
+
+Hazard ratio (HR) estimate calculated based on univariate cox regression analysis of TCGA overall survival (n=320; deceased = 153) showing the estimated HR (dots) and the 95% confidence interval (bars). Positive (red) and negative (green) HR means that the feature is associated with decreased and increased survival respectively. 
+
+Corresponding receiver operating characteristic (ROC) curve for prediction of 1-year vital status in the CPTAC melanoma cohort (n=36 patients: deceased = 4, living = 32). 
+
+Bar plots showing the elastic-net logistic regression model coefficients for 13 recurrent features (non-zero in >50% of the bootstrap runs). 
+
+Kaplan-Meier (KM) curves displaying the estimated survival probability for two different groups (low and high) defined according to the values of corresponding spatial features. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 22, fig.height = 12}
+
+# Univariate Cox Regression (Overall Survival)  --------------------------------
+
+survival_liu <- survival_tcga_liu %>% 
+  dplyr::filter(type == "SKCM", bcr_patient_barcode %in% rownames(tcga_mat)) %>%
+  dplyr::select(bcr_patient_barcode, OS, OS.time, ajcc_pathologic_tumor_stage) %>%
+  dplyr::rename("pat_id" = "bcr_patient_barcode",
+                "tumor_stage" = "ajcc_pathologic_tumor_stage") %>%
+  dplyr::mutate(OS = ifelse(OS == "#N/D", NA, OS),
+                OS.time = ifelse(OS.time == "#N/D", NA, OS.time),
+                tumor_stage = ifelse(tumor_stage == "[Not Available]", NA , tumor_stage)) %>%
+  dplyr::mutate(OS = as.numeric(OS),
+                OS.time = as.numeric(OS.time))
+  #dplyr::filter(tumor_stage != "Stage IV")
+
+tcga_mat$pat_id <- rownames(tcga_mat)
+
+tcga_survival_mat <- dplyr::inner_join(tcga_mat, survival_liu, by = "pat_id")
+tcga_survival_mat <- tcga_survival_mat %>%
+  dplyr::filter(!(is.na(OS) & is.na(OS.time)))
+
+tcga_survival_mat <- tcga_survival_mat %>% 
+  dplyr::filter(!is.na(OS.time) & !is.na(tumor_stage)) 
+
+cox_features_df <- do.call(rbind, lapply(colnames(tcga_survival_mat)[1:96], function(X){
+  cox_fit <- coxph(Surv(OS.time, OS) ~ get(X), data=tcga_survival_mat) # + tumor_stage
+  cox_df <- cox_fit %>% tidy() %>% dplyr::mutate(term = ifelse(term == "get(X)", X, term))
+  cox_df$C <- summary(cox_fit)$concordance[1]
+  cox_df$C_se <- summary(cox_fit)$concordance[2]
+  return(cox_df)
+}))
+
+## compute HR
+cox_features_df <- cox_features_df %>%
+  mutate(upper = estimate + 1.96 * std.error,
+         lower = estimate - 1.96 * std.error) %>%
+  mutate(across(all_of(c("estimate", "lower", "upper")), exp))
+
+## sort features by HR
+cox_features_df <- cox_features_df %>% 
+  filter(term %in% colnames(tcga_survival_mat)[1:96]) %>%
+  group_by(term) %>%
+  arrange(desc(estimate)) %>%
+  dplyr::rename("HR" = "estimate")
+
+## Factor levels
+cox_features_df$term <- factor(cox_features_df$term, levels = cox_features_df$term)
+
+## saturate features with very high HR
+cox_features_df <- cox_features_df %>%
+  mutate(HR = ifelse(HR > 5, 5, HR),
+         upper = ifelse(upper > 5, 5, upper))
+
+## Subset: Features that HR CI do not cross 1)
+cox_features_df_filtered <- cox_features_df %>%
+  dplyr::filter((HR>1 & round(lower,3)>1) | (HR<1 & round(upper,3)<1)) %>%
+  dplyr::arrange(desc(HR))
+
+## Factor levels
+cox_features_df_filtered$term <- factor(cox_features_df_filtered$term, levels = cox_features_df_filtered$term)
+
+OS_HR_filtered <- cox_features_df_filtered %>%
+  ggplot(aes(HR, term, color = HR > 1)) +
+  geom_vline(xintercept = 1, color = "gray75") +
+  geom_linerange(aes(xmin = lower, xmax = upper), size = 1.5, alpha = 0.5) +
+  geom_point(size = 2) +
+  theme_bw(base_size = 12) +
+  scale_color_manual(values = c("green4", "red3"), guide = "none") +
+  xlim(c(0, 5)) +
+  labs(y = NULL, x = "OS - HR estimate (95% CI)") +
+  theme(axis.text.y = element_text(hjust = 1, size = 12, color = "black"),
+        axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+        axis.title = element_text(size=12, color = "black"))
+
+# ROC curve  --------------------------------
+
+## boostrap learned model on TCGA
+load(params$bootstrap_model)
+
+## make predictions on the CPTAC test set for each model
+test_pred <- lapply(boot_models, function(x){
+  glmnet::predict.glmnet(x, newx = as.matrix(cptac_mat), type = "response")
+})
+test_pred.df <- do.call(cbind, test_pred)
+test_pred_median <- apply(test_pred.df, 1, median)
+
+## ROC curve performance
+### Median
+roc_res <- glmnet::roc.glmnet(test_pred_median, newy = CPTAC_1yearsurv)
+#pROC::auc(roc(CPTAC_1yearsurv, test_pred_median))
+
+### Bootstrap
+
+ROC_curve <- ggplot(roc_res, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") +
+  labs(x = "False Positive Rate", y = "True Positive Rate") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(hjust = 1, size = 12, color = "black"),
+        axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+        axis.title = element_text(size=12, color = "black"))
+
+## Features coefficients ----
+
+# retrieve robust coefficients (selected in more that 50% of the bootstrap runs)
+nonzero_coeff <- lapply(boot_models, function(x){
+  model_coef <- coef(x)
+  return(model_coef@Dimnames[[1]][model_coef@i+1])
+})
+nonzero_coeff_sorted <- sort(table(unlist(nonzero_coeff)), decreasing = T)
+recurrent_features <- setdiff(names(which(nonzero_coeff_sorted>50)), "(Intercept)")
+
+bootstrap_coeff <- lapply(boot_models, function(x){
+  model_coef <- coef(x)
+  nonZeroFeat <- data.frame(names=model_coef@Dimnames[[1]][model_coef@i+1], value=model_coef@x)
+  
+  ix <- match(recurrent_features, nonZeroFeat$names)
+  coeff_value <- nonZeroFeat$value[ix]
+  coeff_value[is.na(coeff_value)] <- 0
+  return(coeff_value)
+})
+
+summary_coeff <- data.frame(name=recurrent_features,
+                           median=apply(do.call(cbind, bootstrap_coeff), 1, median),
+                           sd=apply(do.call(cbind, bootstrap_coeff), 1, sd))
+
+
+coef_plot <- ggplot(data=summary_coeff, aes(x=reorder(name, -median), y=median)) +
+  geom_bar(stat="identity") +
+  labs(x = "Feature", y = "Estimated coefficient") +
+  theme_minimal() + 
+  ylim(c(-2.5,2.5)) +
+  coord_flip()+ 
+  theme(axis.text.x = element_text(hjust = 1, size = 12, color = "black", angle = 45),
+        axis.text.y = element_text(hjust = 1, size = 12, color = "black"),
+        axis.title.y = element_text(size=12, color = "black"),
+        axis.title.x = element_blank())
+
+## Kaplan-Meier Curves of relevant features on the TCGA ------------------------
+
+KM_features_df <- subset(cox_features_df_filtered, term %in% summary_coeff$name)
+
+gg_kms <- lapply(as.character(KM_features_df$term), function(X){
+  
+  tmp <- tcga_survival_mat %>%
+    dplyr::select(c(OS, OS.time, X)) %>%
+    dplyr::rename("feature_value" = X) %>%
+    dplyr::filter(!is.na(feature_value)) %>%
+    dplyr::mutate(inv_rank = rank(-feature_value)) %>%
+    dplyr::mutate(category = as.numeric(cut_number(inv_rank, 2)))
+  
+  tmp$category <- gsub(1, "High", tmp$category)
+  tmp$category <- gsub(2, "Low", tmp$category)
+  tmp$category <- factor(tmp$category, levels = c("Low", "High"))
+  
+  km_fit_OS <- survfit(Surv(OS.time, OS) ~ category, data=tmp)
+  
+  ## KM plot - 1year
+  KM_OS_plot <- ggsurvplot(km_fit_OS,
+                           palette = c("red3", "green4"),
+                           #palette = rev(c("red3", "green4")),
+                           conf.int = TRUE, 
+                           censor = TRUE,
+                           risk.table = TRUE, 
+                           #xlim = c(0, 360.25),
+                           #break.x.by = c(60),
+                           fontsize = 3,
+                           xlab = "Time in days",
+                           ggtheme = theme_bw() + 
+                             theme(
+                               axis.text.y = element_text(hjust = 0, size = 12, color = "black"),
+                               axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+                               axis.title = element_text(size=12, color = "black"),
+                               legend.text = element_text(size = 12)))
+  
+  KM_OS_plot
+  
+})
+
+## 1st row
+first_row <- ggarrange(OS_HR_filtered, ROC_curve, coef_plot, nrow = 1, ncol = 3, align = "h")
+
+## 2nd row
+second_row <- survminer::arrange_ggsurvplots(gg_kms,
+                                             print = FALSE,
+                                             nrow = 1, ncol = 5, 
+                                             risk.table.height = 0.4)
+
+## Plot both rows
+first_row
+second_row
+
+```
