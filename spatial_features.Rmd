@@ -58,16 +58,12 @@ cptac_mat <- data.table::fread(file = "./data/spatial_features_matrix_CPTAC.csv"
 cptac_mat <- cptac_mat %>% tibble::column_to_rownames(var = "V1")
 
 # Read Bagaev subtypes for TCGA data -------------------------------------------
-bagaev_file = "./data/MFP.xlsx"
-# params$tcga_bagaev_subtypes
-bagaev_mfp <- readxl::read_xlsx(path = bagaev_file, sheet = 1, skip = 1)
+bagaev_mfp <- readxl::read_xlsx(path = params$tcga_bagaev_subtypes, sheet = 1, skip = 1)
 bagaev_mfp <- bagaev_mfp %>% filter(Cohort == "TCGA-SKCM")
 colnames(bagaev_mfp)[1] <- "TCGA_patient_ID"
 
 # Read Survival data for TCGA data -------------------------------------------
-tcga_survival_file = "./data/survival.xlsx"
-# params$tcga_survival
-survival_tcga_liu <- readxl::read_xlsx(path = tcga_survival_file, sheet = 1)
+survival_tcga_liu <- readxl::read_xlsx(path = tcga_survival, sheet = 1)
 
 ```
 
