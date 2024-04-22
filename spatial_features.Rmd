@@ -16,7 +16,7 @@ output: html_document
 
 ```{r setup, include=FALSE, echo=FALSE, warning=FALSE, message=FALSE}
 
-# survival_tcga_liu: "./data/mmc6.xlsx",  tcga_survival: "./data/mmc1.xlsx"
+# tcga_bagaev_subtypes: "./data/mmc6.xlsx",  tcga_survival: "./data/mmc1.xlsx"
 
 # packages
 suppressPackageStartupMessages({
