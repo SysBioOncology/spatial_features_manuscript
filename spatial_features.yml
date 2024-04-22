@@ -1,4 +1,4 @@
-name: spatial_features
+name: spatial_features_manuscript
 channels:
   - conda-forge
 dependencies:
