@@ -17,4 +17,3 @@ dependencies:
   - conda-forge::r-glmnet
   - conda-forge::r-prroc
   - conda-forge::r-rmarkdown
-prefix: /Users/olapuente/mambaforge/envs/spatial_features
