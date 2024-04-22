@@ -15,8 +15,13 @@ output: html_document
 </style>
 
 
+<<<<<<< Updated upstream
 ```{r setup, include=FALSE, echo=FALSE, warning=FALSE, message=FALSE}
 # tcga_bagaev_subtypes: "./data/mmc6.xlsx",  tcga_survival: "./data/mmc1.xlsx"
+=======
+tcga_bagaev_subtypes =  "./data/mmc6.xlsx"
+tcga_survival = "./data/mmc1.xlsx"
+>>>>>>> Stashed changes
 
 params <- list()
 params$spatial_features_dir <- "data/features_tcga_skcm_ff"
@@ -35,6 +40,7 @@ suppressPackageStartupMessages({
   library("ggpubr")
   library("reshape2")
   library("ggrepel")
+<<<<<<< Updated upstream
   library("tidyr")
   library("plyr")
   library("purrr")
@@ -44,6 +50,17 @@ suppressPackageStartupMessages({
   library("survival")
   library("ggfortify")
   library("survminer")
+=======
+  library('tidyr')
+  library('plyr')
+  library('purrr')
+  library('gridExtra')
+  library('rstatix')
+  library('ComplexHeatmap')
+  library('survminer')
+  library('survival')
+  library('ggfortify')
+>>>>>>> Stashed changes
 })
 
 colors_mfp <- c("#64a860", "#9970c1", "#cc545e", "#b98d3e")
@@ -63,12 +80,20 @@ cptac_mat <- data.table::fread(file = "./data/spatial_features_matrix_CPTAC.csv"
 cptac_mat <- cptac_mat %>% tibble::column_to_rownames(var = "V1")
 
 # Read Bagaev subtypes for TCGA data -------------------------------------------
-bagaev_mfp <- readxl::read_xlsx(path = params$tcga_bagaev_subtypes, sheet = 1, skip = 1)
-bagaev_mfp <- bagaev_mfp %>% filter(Cohort == "TCGA-SKCM")
+
+bagaev_mfp <- readxl::read_xlsx(path = tcga_bagaev_subtypes, sheet = 1, skip = 1)
+bagaev_mfp <- bagaev_mfp %>% dplyr::filter(Cohort == "TCGA-SKCM")
 colnames(bagaev_mfp)[1] <- "TCGA_patient_ID"
 
+<<<<<<< Updated upstream
 # Read Survival data for TCGA data -------------------------------------------
 survival_tcga_liu <- readxl::read_xlsx(path = params$tcga_survival, sheet = 1)
+=======
+# Read Survival data for TCGA data ---------------------------------------------
+
+survival_tcga_liu <- readxl::read_xlsx(path = tcga_survival, sheet = 1)
+
+>>>>>>> Stashed changes
 ```
 
 ## Figure 1B
@@ -562,7 +587,11 @@ ggarrange(pt_1,
 )
 ```
 
+<<<<<<< Updated upstream
 ## Figure 5
+=======
+Figure 5
+>>>>>>> Stashed changes
 
 Two slides classified as IE subtypes
 Two slides classified as F subtypes which were predicted to have similar cell type abundance
@@ -715,7 +744,11 @@ ggarrange(
 )
 ```
 
+<<<<<<< Updated upstream
 ## Figure 6
+=======
+Figure 6
+>>>>>>> Stashed changes
 
 Hazard ratio (HR) estimate calculated based on univariate cox regression analysis of TCGA overall survival (n=320; deceased = 153) showing the estimated HR (dots) and the 95% confidence interval (bars). Positive (red) and negative (green) HR means that the feature is associated with decreased and increased survival respectively. 
 
@@ -731,6 +764,7 @@ Kaplan-Meier (KM) curves displaying the estimated survival probability for two d
 survival_liu <- survival_tcga_liu %>%
   dplyr::filter(type == "SKCM", bcr_patient_barcode %in% rownames(tcga_mat)) %>%
   dplyr::select(bcr_patient_barcode, OS, OS.time, ajcc_pathologic_tumor_stage) %>%
+<<<<<<< Updated upstream
   dplyr::rename(
     "pat_id" = "bcr_patient_barcode",
     "tumor_stage" = "ajcc_pathologic_tumor_stage"
@@ -745,6 +779,15 @@ survival_liu <- survival_tcga_liu %>%
     OS.time = as.numeric(OS.time)
   )
 # dplyr::filter(tumor_stage != "Stage IV")
+=======
+  dplyr::rename("pat_id" = "bcr_patient_barcode",
+                "tumor_stage" = "ajcc_pathologic_tumor_stage") %>%
+  dplyr::mutate(OS = ifelse(OS == "#N/D", NA, OS),
+                OS.time = ifelse(OS.time == "#N/D", NA, OS.time),
+                tumor_stage = ifelse(tumor_stage == "[Not Available]", NA , tumor_stage)) %>%
+  dplyr::mutate(OS = as.numeric(OS),
+                OS.time = as.numeric(OS.time))
+>>>>>>> Stashed changes
 
 tcga_mat$pat_id <- rownames(tcga_mat)
 
@@ -767,6 +810,7 @@ cox_features_df <- do.call(rbind, lapply(colnames(tcga_survival_mat)[1:96], func
 
 ##  compute HR
 cox_features_df <- cox_features_df %>%
+<<<<<<< Updated upstream
   mutate(
     upper = estimate + 1.96 * std.error,
     lower = estimate - 1.96 * std.error
@@ -778,6 +822,17 @@ cox_features_df <- cox_features_df %>%
   filter(term %in% colnames(tcga_survival_mat)[1:96]) %>%
   group_by(term) %>%
   arrange(desc(estimate)) %>%
+=======
+  dplyr::mutate(upper = estimate + 1.96 * std.error,
+                lower = estimate - 1.96 * std.error) %>%
+  dplyr::mutate(across(all_of(c("estimate", "lower", "upper")), exp))
+
+## sort features by HR
+cox_features_df <- cox_features_df %>% 
+  dplyr::filter(term %in% colnames(tcga_survival_mat)[1:96]) %>%
+  dplyr::group_by(term) %>%
+  dplyr::arrange(desc(estimate)) %>%
+>>>>>>> Stashed changes
   dplyr::rename("HR" = "estimate")
 
 ## Factor levels
@@ -785,10 +840,15 @@ cox_features_df$term <- factor(cox_features_df$term, levels = cox_features_df$te
 
 ## saturate features with very high HR
 cox_features_df <- cox_features_df %>%
+<<<<<<< Updated upstream
   mutate(
     HR = ifelse(HR > 5, 5, HR),
     upper = ifelse(upper > 5, 5, upper)
   )
+=======
+  dplyr::mutate(HR = ifelse(HR > 5, 5, HR),
+                upper = ifelse(upper > 5, 5, upper))
+>>>>>>> Stashed changes
 
 ## Subset: Features that HR CI do not cross 1)
 cox_features_df_filtered <- cox_features_df %>%
@@ -886,8 +946,13 @@ coef_plot <- ggplot(data = summary_coeff, aes(x = reorder(name, -median), y = me
 
 KM_features_df <- subset(cox_features_df_filtered, term %in% summary_coeff$name)
 
+<<<<<<< Updated upstream
 gg_kms <- lapply(as.character(KM_features_df$term), function(X) {
   # X <- as.character(KM_features_df$term)[1]
+=======
+gg_kms <- lapply(as.character(KM_features_df$term), function(X){
+
+>>>>>>> Stashed changes
   tmp <- tcga_survival_mat %>%
     dplyr::select(c(OS, OS.time, X)) %>%
     dplyr::rename("feature_value" = X) %>%
@@ -899,6 +964,7 @@ gg_kms <- lapply(as.character(KM_features_df$term), function(X) {
   tmp$category <- gsub(2, "Low", tmp$category)
   tmp$category <- factor(tmp$category, levels = c("Low", "High"))
 
+<<<<<<< Updated upstream
   km_fit_OS <- survfit(Surv(OS.time, OS) ~ category, data = tmp)
 
   ##  KM plot - 1year
@@ -922,17 +988,42 @@ gg_kms <- lapply(as.character(KM_features_df$term), function(X) {
   )
 
   KM_OS_plot
+=======
+  km_fit_OS <- survival::survfit(survival::Surv(OS.time, OS) ~ category, data=tmp)
+  
+  ## KM plot
+  KM_OS_plot <- survminer::ggsurvplot(km_fit_OS, data = tmp,
+                                      palette = c("red3", "green4"),
+                                      conf.int = TRUE,
+                                      censor = TRUE,
+                                      risk.table = TRUE,
+                                      fontsize = 3,
+                                      xlab = "Time in days",
+                                      ggtheme = theme_bw() +
+                                        theme(
+                                          axis.text.y = element_text(hjust = 0, size = 12, color = "black"),
+                                          axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+                                          axis.title = element_text(size=12, color = "black"),
+                                          legend.text = element_text(size = 12)))
+
+>>>>>>> Stashed changes
 })
 
 ## 1st row
-first_row <- ggarrange(OS_HR_filtered, ROC_curve, coef_plot, nrow = 1, ncol = 3, align = "h")
+first_row <- ggpubr::ggarrange(OS_HR_filtered, ROC_curve, coef_plot, nrow = 1, ncol = 3, align = "h")
 
 ##  2nd row
 second_row <- survminer::arrange_ggsurvplots(gg_kms,
+<<<<<<< Updated upstream
   print = FALSE,
   nrow = 1, ncol = 5,
   risk.table.height = 0.4
 )
+=======
+                                             print = FALSE,
+                                             nrow = 1, ncol = 5,
+                                             risk.table.height = 0.4)
+>>>>>>> Stashed changes
 
 ##  Plot both rows
 first_row
