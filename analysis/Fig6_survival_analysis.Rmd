@@ -1,0 +1,298 @@
+---
+title: "Notebook to generate Figure 6: Survival Analysis" 
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+author: 
+    - Óscar Lapuente-Santana
+    - Federica Eduati
+params: 
+    spatial_features_dir: "data/features_tcga_skcm_FF"
+    tcga_bagaev_subtypes: "data/bagaev_file.xlsx"
+    tcga_survival: "data/survival.xlsx"
+    bootstrap_model: "data/bootstrap_model.RData"
+    spatial_features_matrix_tcga: "data/spatial_features_matrix_TCGA.csv"
+    spatial_features_matrix_cptac: "data/spatial_features_matrix_CPTAC.csv"
+output:
+    html_document:
+        code_folding: show
+        code_download: true
+        theme: cerulean
+knit: |
+  rmdmatter::renaming_renderer(function(metadata) {
+    with(metadata, paste0(stringr::str_replace_all(title, c(" " = "_", "\\:" = "_")), "-",  format(Sys.time(), "%Y%b%d-%H_%M_%S")))})
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+## Setup 
+
+```{r, notebook-settings, warning=FALSE, message=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+options(knitr.table.format = "html", pillar.sigfig = 10)
+# change default settings to fit plots
+knitr::opts_chunk$set(fig.height = 8, fig.width = 14, warning = FALSE, message = FALSE, cache = TRUE)
+
+pacman::p_load(GaitiLabUtils, data.table, tidyverse, stringr, ggplot2, ggpubr, survival, glmnet, survminer, rstatix)
+
+# Set working directory
+set_wd()
+```
+
+## Prepare/format data
+
+```{r, prep-data}
+bagaev_mfp <- readxl::read_xlsx(params$tcga_bagaev_subtypes, sheet = 1, skip = 1)
+bagaev_mfp <- bagaev_mfp %>%
+  dplyr::filter(Cohort == "TCGA-SKCM") %>%
+  rename(TCGA_patient_ID = Sample)
+
+# Read Survival data for TCGA data ---------------------------------------------
+
+survival_tcga_liu <- readxl::read_xlsx(path = params$tcga_survival, sheet = 1)
+
+# Read TCGA-SKCM features ------------------------------------------------------
+tcga_mat <- data.table::fread(file = params$spatial_features_matrix_tcga) %>%
+  tibble::column_to_rownames(var = "V1") %>%
+  mutate(pat_id = rownames(.))
+
+# Read CPTAC-CM features ------------------------------------------------------
+
+cptac_mat <- data.table::fread(file = params$spatial_features_matrix_cptac) %>% tibble::column_to_rownames(var = "V1")
+```
+
+
+## Fig. 6a - Univariate Cox Regression (Overall Survival)
+
+Hazard ratio (HR) estimate calculated based on univariate cox regression analysis of TCGA overall survival (n=320; deceased = 153) showing the estimated HR (dots) and the 95% confidence interval (bars). Positive (red) and negative (green) HR means that the feature is associated with decreased and increased survival respectively. 
+
+```{r, uni-cox-regression-tcga, fig.width = 22, fig.height = 12}
+#  Univariate Cox Regression (Overall Survival)  --------------------------------
+
+survival_liu <- survival_tcga_liu %>%
+  dplyr::filter(type == "SKCM", bcr_patient_barcode %in% rownames(tcga_mat)) %>%
+  dplyr::select(bcr_patient_barcode, OS, OS.time, ajcc_pathologic_tumor_stage) %>%
+  dplyr::rename(
+    "pat_id" = "bcr_patient_barcode",
+    "tumor_stage" = "ajcc_pathologic_tumor_stage"
+  ) %>%
+  dplyr::mutate(
+    OS = ifelse(OS == "#N/D", NA, OS),
+    OS.time = ifelse(OS.time == "#N/D", NA, OS.time),
+    tumor_stage = ifelse(tumor_stage == "[Not Available]", NA, tumor_stage)
+  ) %>%
+  dplyr::mutate(
+    OS = as.numeric(OS),
+    OS.time = as.numeric(OS.time)
+  )
+
+# Combine matrices/dataframes
+tcga_survival_mat <- dplyr::inner_join(tcga_mat, survival_liu, by = "pat_id")
+tcga_survival_mat <- tcga_survival_mat %>%
+  dplyr::filter(
+    # Remove observations where OS and OS.time are both missing
+    !(is.na(OS) & is.na(OS.time)),
+    # Remove observations where OS.time and tumor stage are missing
+    !(is.na(OS.time) & is.na(tumor_stage))
+  )
+
+cox_features_df <- do.call(rbind, lapply(colnames(tcga_survival_mat)[1:96], function(X) {
+  cox_fit <- coxph(Surv(OS.time, OS) ~ get(X), data = tcga_survival_mat) # + tumor_stage
+  cox_df <- cox_fit %>%
+    tidy() %>%
+    dplyr::mutate(term = ifelse(term == "get(X)", X, term))
+  cox_df$C <- summary(cox_fit)$concordance[1]
+  cox_df$C_se <- summary(cox_fit)$concordance[2]
+  return(cox_df)
+})) %>%
+  ##  compute HR
+  dplyr::mutate(
+    upper = estimate + 1.96 * std.error,
+    lower = estimate - 1.96 * std.error
+  ) %>%
+  dplyr::mutate(across(all_of(c("estimate", "lower", "upper")), exp)) %>%
+  ##  sort features by HR
+  dplyr::filter(term %in% colnames(tcga_survival_mat)[1:96]) %>%
+  dplyr::group_by(term) %>%
+  dplyr::arrange(desc(estimate)) %>%
+  dplyr::rename("HR" = "estimate") %>%
+  mutate(term = factor(term, levels = unique(term))) %>%
+  ## saturate features with very high HR
+  dplyr::mutate(
+    HR = ifelse(HR > 5, 5, HR),
+    upper = ifelse(upper > 5, 5, upper)
+  )
+
+## Subset: Features that HR CI do not cross 1)
+cox_features_df_filtered <- cox_features_df %>%
+  dplyr::filter((HR > 1 & round(lower, 3) > 1) | (HR < 1 & round(upper, 3) < 1)) %>%
+  dplyr::arrange(desc(HR)) %>%
+  ## Factor levels
+  mutate(term = factor(term, levels = unique(term)))
+
+
+OS_HR_filtered <- cox_features_df_filtered %>%
+  ggplot(aes(HR, term, color = HR > 1)) +
+  geom_vline(xintercept = 1, color = "gray75") +
+  geom_linerange(aes(xmin = lower, xmax = upper), linewidth = 1.5, alpha = 0.5) +
+  geom_point(size = 2) +
+  theme_bw(base_size = 12) +
+  scale_color_manual(values = c("green4", "red3"), guide = "none") +
+  xlim(c(0, 5)) +
+  labs(y = NULL, x = "OS - HR estimate (95% CI)") +
+  theme(
+    axis.text.y = element_text(hjust = 1, size = 12, color = "black"),
+    axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+    axis.title = element_text(size = 12, color = "black")
+  )
+
+OS_HR_filtered
+```
+
+## Fig. 6b - CPTAC Validation Dataset
+
+Corresponding receiver operating characteristic (ROC) curve for prediction of 1-year vital status in the CPTAC melanoma cohort (n=36 patients: deceased = 4, living = 32). 
+
+```{r, prep-cptac-data}
+#  ROC curve  --------------------------------
+##  boostrap learned model on TCGA
+load(params$bootstrap_model)
+
+## make predictions on the CPTAC test set for each model
+test_pred <- lapply(boot_models, function(x) {
+  glmnet::predict.glmnet(x, newx = as.matrix(cptac_mat), type = "response")
+})
+test_pred.df <- do.call(cbind, test_pred)
+test_pred_median <- apply(test_pred.df, 1, median)
+
+## ROC curve performance
+###  Median
+roc_res <- glmnet::roc.glmnet(test_pred_median, newy = CPTAC_1yearsurv)
+
+### Bootstrap
+ROC_curve <- ggplot(roc_res, aes(x = FPR, y = TPR)) +
+  geom_line(color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") +
+  labs(x = "False Positive Rate", y = "True Positive Rate") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(hjust = 1, size = 12, color = "black"),
+    axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+    axis.title = element_text(size = 12, color = "black")
+  )
+ROC_curve
+```
+
+## Fig. 6c - Elastic-net logistic regression model coefficients
+Bar plots showing the elastic-net logistic regression model coefficients for 13 recurrent features (non-zero in >50% of the bootstrap runs). 
+
+```{r, bar-plots-coeff-features}
+## Features coefficients ----
+
+# retrieve robust coefficients (selected in more that 50% of the bootstrap runs)
+nonzero_coeff <- lapply(boot_models, function(x) {
+  model_coef <- coef(x)
+  return(model_coef@Dimnames[[1]][model_coef@i + 1])
+})
+nonzero_coeff_sorted <- sort(table(unlist(nonzero_coeff)), decreasing = TRUE)
+recurrent_features <- setdiff(names(which(nonzero_coeff_sorted > 50)), "(Intercept)")
+
+bootstrap_coeff <- lapply(boot_models, function(x) {
+  model_coef <- coef(x)
+  nonZeroFeat <- data.frame(names = model_coef@Dimnames[[1]][model_coef@i + 1], value = model_coef@x)
+
+  ix <- match(recurrent_features, nonZeroFeat$names)
+  coeff_value <- nonZeroFeat$value[ix]
+  coeff_value[is.na(coeff_value)] <- 0
+  return(coeff_value)
+})
+
+summary_coeff <- data.frame(
+  name = recurrent_features,
+  median = apply(do.call(cbind, bootstrap_coeff), 1, median),
+  sd = apply(do.call(cbind, bootstrap_coeff), 1, sd)
+)
+
+coef_plot <- ggplot(data = summary_coeff, aes(x = reorder(name, -median), y = median)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Feature", y = "Estimated coefficient") +
+  theme_minimal() +
+  ylim(c(-2.5, 2.5)) +
+  coord_flip() +
+  theme(
+    axis.text.x = element_text(hjust = 1, size = 12, color = "black", angle = 45),
+    axis.text.y = element_text(hjust = 1, size = 12, color = "black"),
+    axis.title.y = element_text(size = 12, color = "black"),
+    axis.title.x = element_blank()
+  )
+coef_plot
+```
+
+## Fig 6d. Kaplan-Meier (KM) curves
+Kaplan-Meier (KM) curves displaying the estimated survival probability for two different groups (low and high) defined according to the values of corresponding spatial features.
+
+```{r, vis-kaplan-meier}
+## Kaplan-Meier Curves of relevant features on the TCGA ------------------------
+
+KM_features_df <- subset(cox_features_df_filtered, term %in% summary_coeff$name)
+
+gg_kms <- lapply(as.character(KM_features_df$term), function(X) {
+  tmp <- tcga_survival_mat %>%
+    dplyr::select(c(OS, OS.time, X)) %>%
+    dplyr::rename("feature_value" = X) %>%
+    dplyr::filter(!is.na(feature_value)) %>%
+    dplyr::mutate(inv_rank = rank(-feature_value)) %>%
+    dplyr::mutate(category = as.numeric(cut_number(inv_rank, 2)))
+
+  tmp$category <- gsub(1, "High", tmp$category)
+  tmp$category <- gsub(2, "Low", tmp$category)
+  tmp$category <- factor(tmp$category, levels = c("Low", "High"))
+
+  km_fit_OS <- survival::survfit(survival::Surv(OS.time, OS) ~ category, data = tmp)
+
+  ##  KM plot
+  KM_OS_plot <- survminer::ggsurvplot(km_fit_OS,
+    data = tmp,
+    palette = c("red3", "green4"),
+    conf.int = TRUE,
+    censor = TRUE,
+    risk.table = TRUE,
+    fontsize = 3,
+    xlab = "Time in days",
+    ggtheme = theme_bw() +
+      theme(
+        axis.text.y = element_text(hjust = 0, size = 12, color = "black"),
+        axis.text.x = element_text(hjust = 0.5, size = 12, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        legend.text = element_text(size = 12)
+      )
+  )
+})
+```
+
+## Visualization 
+```{r, vis-combine, fig.width = 22, fig.height = 12}
+## 1st row
+first_row <- ggpubr::ggarrange(OS_HR_filtered, ROC_curve, coef_plot, nrow = 1, ncol = 3, align = "h")
+
+##  2nd row
+second_row <- survminer::arrange_ggsurvplots(gg_kms,
+  print = FALSE,
+  nrow = 1, ncol = 5,
+  risk.table.height = 0.4
+)
+
+##  Plot both rows
+first_row
+second_row
+```
+
+
+## Session Info
+
+```{r, session_info, echo=FALSE}
+options(width = 120)
+sessioninfo::session_info()
+```

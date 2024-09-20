@@ -10,3 +10,24 @@ data/mmc6.xlsx
 
 bagaev_file.xlsx
 tcga_survival_file.xlsx
+
+# Do not add Xenium data
+data/processed
+data/xenium_*
+data/ST_melanoma
+
+# Do not keep logs
+slurm_out
+
+# Do not add data
+preprocessing/
+output/
+
+misc/
+data/
+
+*.pdf
+*.fuse_hidden*
+
+*_cache/
+*_files/

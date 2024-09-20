@@ -1,0 +1,323 @@
+---
+title: "Notebook to generate Supplementary Figure 2c-d: Analysis of Xenium slide with add-on panel"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+author: "Joan Kant"
+params: 
+    output_dir: "output"
+    he_tile_quant: "output/spotlight_rerun/grad_mag10/2_tile_level_quantification/test_tile_predictions_proba.csv"
+    bin_size: 1024
+    he_alignment_file: "data/ST_melanoma/xenium_skin_panel/Xenium_V1_hSkin_Melanoma_Base_FFPE_he_imagealignment.csv"
+    sample_id: "xenium_skin_panel"
+output:
+    html_document:
+        code_folding: show
+        code_download: true
+        theme: cerulean
+knit: |
+  rmdmatter::renaming_renderer(function(metadata) {
+    with(metadata, paste0(stringr::str_replace_all(title, c(" " = "_", "\\:" = "_")), "-",  format(Sys.time(), "%Y%b%d-%H_%M_%S")))})
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+## Setup
+```{r, notebook-settings}
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(fig.height = 8, fig.width = 14, warning = FALSE, message = FALSE, cache = TRUE)
+options(knitr.table.format = "html", pillar.sigfig = 10)
+
+# Unload all previously loaded packages + remove previous environment
+pacman::p_load(GaitiLabUtils, glue, data.table, tidyverse, stringr, patchwork, ggplot2)
+
+# Set working directory
+set_wd()
+
+# Color palette for cell types of interest
+caf_color <- RColorBrewer::brewer.pal(n = 9, name = "Greens")[5]
+endo_color <- RColorBrewer::brewer.pal(n = 9, name = "Purples")[5]
+tcell_color <- RColorBrewer::brewer.pal(n = 9, name = "Blues")[5]
+tumor_color <- RColorBrewer::brewer.pal(n = 9, name = "Reds")[5]
+color_celltypes_oi <- sort(setNames(c(caf_color, endo_color, tcell_color, tumor_color, "lightgrey"), c("CAFs", "Endothelial cells", "T cells", "Tumor cells", "Undetermined")))
+color_palettes_celltypes_oi <- setNames(c("Greens", "Purples", "Blues", "Reds"), c("CAFs", "Endothelial cells", "T cells", "Tumor cells"))
+```
+
+## Load predictions from SPoTLIghT
+
+```{r, load-spotlight-predictions}
+he_tile_quant <- data.table::fread(file = file.path(params$he_tile_quant), sep = "\t") %>%
+    select(slide_submitter_id, CAFs, T_cells, endothelial_cells, tumor_purity, Coord_X, Coord_Y) %>%
+    pivot_longer(
+        cols = !c(slide_submitter_id, Coord_X, Coord_Y),
+        names_to = "celltype", values_to = "prob"
+    ) %>%
+    mutate(
+        celltype = case_when(
+            celltype == "T_cells" ~ "T cells",
+            celltype == "endothelial_cells" ~ "Endothelial cells",
+            celltype == "tumor_purity" ~ "Tumor cells",
+            .default = celltype
+        ),
+        slide_submitter_id = case_when(
+            slide_submitter_id == "xenium-skin-panel" ~ "xenium_skin_panel",
+            slide_submitter_id == "xenium-skin-panel-addon" ~ "xenium_skin_panel_w_add_on",
+            .default = slide_submitter_id
+        ),
+    )
+```
+
+```{r, load-xenium-skin-panel}
+output_dir <- file.path(params$output_dir, params$sample_id)
+
+create_dir(output_dir)
+
+# Load metadata of Xenium sample with annotations
+# Convert um to pixels (https://kb.10xgenomics.com/hc/en-us/articles/11636252598925-What-are-the-Xenium-image-scale-factors)
+image_scale_factor <- .2125
+xenium_meta <- readRDS(glue("data/processed/{params$sample_id}/BANKSY/{params$sample_id}__BANKSY_annotated__metadata.rds")) %>%
+    mutate(
+        # Relabel to match with cell type labels in spotlight quantification
+        Label = factor(ifelse(Label == "Tumor", "Tumor cells", Label)),
+        new_x_pixels = x_centroid / image_scale_factor, new_y_pixels = y_centroid / image_scale_factor
+    ) %>%
+    tibble::rowid_to_column(., "cell_ID")
+```
+
+### Aligning the H&E slides (SPoTLIghT predictions)
+```{r, align-he-slide-skin-panel}
+# Load the image alignment file provided by 10x for the H&E slide
+imagealignment <- read.table(params$he_alignment_file, sep = ",") %>%
+    data.matrix()
+
+# Select the data for the current slide
+he_tile_quant_indiv_sample <- he_tile_quant %>%
+    dplyr::filter(slide_submitter_id == params$sample_id)
+
+# Create matrix with X, Y and Z coordinates, setting Z to 0
+coord_mat <- he_tile_quant_indiv_sample %>%
+    # Add dummy for z-stack
+    mutate(Coord_Z = 1) %>%
+    select(Coord_X, Coord_Y, Coord_Z) %>%
+    data.matrix()
+
+# Apply affine transformation matrix (multiplication of coordinates x image alignment matrix)
+coord_mat_transformed <- coord_mat %*% t(imagealignment)
+# Add the new coordinates to the spotlight predictions
+he_tile_quant_indiv_sample <- he_tile_quant_indiv_sample %>%
+    mutate(
+        new_x = (coord_mat_transformed[, 1]),
+        new_y = (coord_mat_transformed[, 2])
+    ) %>%
+    tibble::rowid_to_column(., "tile_ID")
+```
+
+### Binning cells and tiles
+
+Due to alignment, the tile size, used when tiling the H&E in SPoTLIghT, is lost. Therefore, do binning for both the manually annotated Xenium slide (based on expression) and the new coordinates of the tiles from SPoTLIghT. 
+
+```{r, binning-skin-panel}
+# Get extremes for creating a grid that covers all cells and tiles
+max_x <- plyr::round_any(max(c(xenium_meta$new_x_pixels, he_tile_quant_indiv_sample$new_x)), params$bin_size * 2, ceiling)
+max_y <- plyr::round_any(max(c(xenium_meta$new_y_pixels, he_tile_quant_indiv_sample$new_y)), params$bin_size * 2, ceiling)
+min_x <- plyr::round_any(min(c(xenium_meta$new_x_pixels, he_tile_quant_indiv_sample$new_x)), params$bin_size * 2, floor)
+min_y <- plyr::round_any(min(c(xenium_meta$new_y_pixels, he_tile_quant_indiv_sample$new_y)), params$bin_size * 2, floor)
+
+# Create bins
+x_bins <- data.frame(bin_xcoord = seq(min_x, plyr::round_any(max_x, params$bin_size, ceiling),
+    by = params$bin_size
+)) %>% tibble::rowid_to_column(., "bin_ID")
+y_bins <- data.frame(bin_ycoord = seq(min_y, plyr::round_any(max_y, params$bin_size, ceiling),
+    by = params$bin_size
+)) %>% tibble::rowid_to_column(., "bin_ID")
+
+print(range(x_bins$bin_xcoord))
+print(range(y_bins$bin_ycoord))
+
+# Create full grid
+bin_grid <- expand.grid(x_bins$bin_xcoord, y_bins$bin_ycoord) %>%
+    data.frame() %>%
+    rename(bin_xcoord = Var1, bin_ycoord = Var2)
+
+ncells_xenium_binxy <- data.frame(
+    bin_x = findInterval(xenium_meta$new_x_pixels, x_bins$bin_xcoord),
+    bin_y = findInterval(xenium_meta$new_y_pixels, y_bins$bin_ycoord)
+) %>% tibble::rowid_to_column(., "cell_ID")
+
+ntiles_binxy <- data.frame(
+    bin_x = findInterval(he_tile_quant_indiv_sample$new_x, x_bins$bin_xcoord),
+    bin_y = findInterval(he_tile_quant_indiv_sample$new_y, y_bins$bin_ycoord)
+) %>% tibble::rowid_to_column(., "tile_ID")
+
+# # Add the binx, biny
+xenium_meta <- xenium_meta %>%
+    # Add assigned bin to dataframe
+    left_join(ncells_xenium_binxy, by = "cell_ID") %>%
+    # Assign the actual coords of the bin
+    left_join(x_bins, by = c(bin_x = "bin_ID")) %>%
+    left_join(y_bins, by = c(bin_y = "bin_ID"))
+
+he_tile_quant_indiv_sample <- he_tile_quant_indiv_sample %>%
+    # Add assigned bin to dataframe
+    left_join(ntiles_binxy, by = "tile_ID") %>%
+    # Assign the actual coords of the bin
+    left_join(x_bins, by = c(bin_x = "bin_ID")) %>%
+    left_join(y_bins, by = c(bin_y = "bin_ID"))
+```
+
+
+### Supplementary Figure 2c - Binned Spatial Maps
+
+Row 1 = Xenium and row 2 = SPoTLIghT
+
+```{r, spatial-maps-skin-panel, fig.width = 20, fig.height = 10}
+p_xenium_binned <- lapply(
+    sort(names(color_celltypes_oi)[1:4]),
+    function(current_celltype) {
+        xenium_by_bin <- xenium_meta %>%
+            filter(Label == current_celltype) %>%
+            # Grouping by bin
+            group_by(bin_xcoord, bin_ycoord) %>%
+            count()
+
+        p_xenium_binned <- ggplot(data = xenium_by_bin, aes(x = bin_xcoord, y = bin_ycoord, fill = n)) +
+            geom_tile() +
+            labs(
+                title = current_celltype,
+                subtitle = glue::glue("No. cells={formatC(sum(xenium_by_bin$n), big.mark = ',')}")
+            ) +
+            scale_fill_distiller(
+                palette = color_palettes_celltypes_oi[current_celltype],
+                direction = 1, name = "Cells",
+                guide = guide_colorbar(
+                    barwidth = unit(9, "lines"),
+                    barheight = unit(.9, "lines"), title.position = "top"
+                ), limits = c(0, NA)
+            )
+        return(p_xenium_binned)
+    }
+)
+
+p_he_binned_prob <- lapply(
+    sort(names(color_celltypes_oi)[1:4]),
+    function(current_celltype) {
+        he_grouped_by_bin <- he_tile_quant_indiv_sample %>%
+            filter(celltype == current_celltype) %>%
+            group_by(bin_xcoord, bin_ycoord) %>%
+            summarise(
+                n = n(),
+                mean_prob = mean(prob)
+            )
+
+        colorbar_min <- plyr::round_any(quantile(he_grouped_by_bin$mean_prob, .05), .05, floor)
+        colorbar_max <- plyr::round_any(quantile(he_grouped_by_bin$mean_prob, .95), .05, ceiling)
+
+        he_grouped_by_bin <- he_grouped_by_bin %>% mutate(mean_prob = case_when(
+            mean_prob > colorbar_max ~ colorbar_max,
+            mean_prob < colorbar_min ~ colorbar_min,
+            .default = mean_prob
+        ))
+
+        p_he_binned <- ggplot(data = he_grouped_by_bin, aes(x = bin_xcoord, y = bin_ycoord, fill = mean_prob)) +
+            geom_tile() +
+            labs(
+                title = current_celltype,
+                subtitle = glue::glue("No. tiles={formatC(sum(he_grouped_by_bin$n), big.mark = ',')}")
+            ) +
+            scale_fill_distiller(
+                palette = color_palettes_celltypes_oi[current_celltype],
+                direction = 1, name = "Prob",
+                guide = guide_colorbar(
+                    barwidth = unit(9, "lines"),
+                    barheight = unit(.9, "lines"), title.position = "top"
+                ),
+                limits = c(colorbar_min, colorbar_max)
+            )
+
+        return(p_he_binned)
+    }
+)
+
+p_combined_proba <- wrap_plots(c(p_xenium_binned, p_he_binned_prob)) + plot_layout(nrow = 2) +
+    plot_annotation(subtitle = glue("binsize={params$bin_size}px"))
+
+p_combined_proba <- p_combined_proba &
+    GaitiLabUtils::default_theme() &
+    xlim(c(min_x - params$bin_size, max_x + params$bin_size)) &
+    ylim(c(min_y - params$bin_size, max_y + params$bin_size)) &
+    labs(x = "X (px)", y = "Y (px)") & theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "bottom", aspect.ratio = 1,
+    axis.title = element_text(face = "plain")
+)
+
+p_combined_proba
+ggsave(p_combined_proba, filename = glue("{output_dir}/spatial_maps_proba.pdf"), width = 20, height = 10)
+```
+
+### Supplementary Figure 2d - Comparison Xenium spatial cell type distribution vs SPoTLIghT's predictions
+
+Compare number of cells (Xenium) vs mean probability (SPoTLIghT) per bin.
+
+Of note, each dot in the correlation plot is a bin. 
+
+> Bins that do not have any cells (Xenium) AND that also do not have any tiles (SPoTLIghT) are removed. 
+
+```{r, quant-xenium-vs-spotlight, fig.width = 20, fig.height = 5}
+p_scatter <- lapply(sort(names(color_celltypes_oi)[1:4]), function(current_celltype) {
+    # Comparison: Xenium vs Spotlight (probabilities)
+    xenium_by_bin <- xenium_meta %>%
+        filter(Label == current_celltype) %>%
+        # Grouping by bin
+        group_by(bin_xcoord, bin_ycoord) %>%
+        summarise(ncells_xenium = n())
+
+    he_grouped_by_bin <- he_tile_quant_indiv_sample %>%
+        filter(celltype == current_celltype) %>%
+        group_by(bin_xcoord, bin_ycoord) %>%
+        summarise(
+            ntiles_spotlight = n(),
+            mean_prob_spotlight = mean(prob)
+        )
+
+    combined_df_w_prob <- merge(xenium_by_bin, he_grouped_by_bin, by = c("bin_xcoord", "bin_ycoord"), all = TRUE)
+    combined_df_w_prob[is.na(combined_df_w_prob)] <- 0
+    head(combined_df_w_prob)
+    combined_df_w_prob <- combined_df_w_prob %>% filter(ncells_xenium != 0, ntiles_spotlight != 0)
+
+    p <- ggpubr::ggscatter(combined_df_w_prob,
+        x = "ncells_xenium", y = "mean_prob_spotlight",
+        size = 1, fill = NA,
+        add = "reg.line", # Add regressin line
+        add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+        conf.int = TRUE # Add confidence interval
+    ) +
+        # Add correlation coefficient
+        ggpubr::stat_cor(method = "spearman") +
+        labs(
+            title = current_celltype,
+            subtitle = glue("No. bins={formatC(nrow(combined_df_w_prob), big.mark = ',')}")
+        ) +
+        scale_y_continuous(breaks = scales::pretty_breaks()) +
+        scale_x_continuous(breaks = scales::pretty_breaks())
+    return(p)
+})
+
+p_combined <- wrap_plots(p_scatter) + plot_layout(nrow = 1, axis_titles = "collect") & GaitiLabUtils::default_theme() &
+    labs(
+        x = "No. cells from Xenium annotation",
+        y = "Mean predicted prob by SPoTLIghT",
+    ) & theme(aspect.ratio = 1, axis.title = element_text(face = "plain"))
+p_combined
+
+ggsave(p_combined, filename = glue("{output_dir}/{params$sample_id}__binsize{params$bin_size}__corr__proba.pdf"), width = 20, height = 5)
+```
+
+## Session Info
+```{r, session-info, echo = FALSE}
+sessionInfo()
+```
+

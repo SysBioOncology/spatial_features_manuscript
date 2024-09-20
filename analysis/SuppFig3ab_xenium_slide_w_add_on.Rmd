@@ -1,0 +1,380 @@
+---
+title: "Notebook to generate Supplementary Figure 3a-b: Analysis of Xenium slide with add-on panel"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+author: "Joan Kant"
+params: 
+    output_dir: "output"
+    sample_id: "xenium_skin_panel_w_add_on"
+output:
+    html_document:
+        code_folding: show
+        code_download: true
+        theme: cerulean
+knit: |
+  rmdmatter::renaming_renderer(function(metadata) {
+    with(metadata, paste0(stringr::str_replace_all(title, c(" " = "_", "\\:" = "_", "\\-" = "_")), "-",  format(Sys.time(), "%Y%b%d-%H_%M_%S")))})
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+## Setup 
+```{r, notebook-settings, warning=FALSE, message=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+options(knitr.table.format = "html", pillar.sigfig = 10)
+# change default settings to fit plots
+knitr::opts_chunk$set(fig.height = 8, fig.width = 14, warning = FALSE, message = FALSE, cache = TRUE)
+
+# Unload all previously loaded packages + remove previous environment
+pacman::p_load(
+    GaitiLabUtils, glue, data.table, tidyverse, stringr,
+    Banksy, Seurat, SeuratWrappers, ggrastr,
+    ggplot2, gridExtra
+)
+
+# Set working directory
+set_wd()
+
+gene_panel_path <- "misc/Xenium_Human_Skin_Gene_Expression_Panel.csv"
+# Color palette for cell types of interest
+caf_color <- RColorBrewer::brewer.pal(n = 9, name = "Greens")[5]
+endo_color <- RColorBrewer::brewer.pal(n = 9, name = "Purples")[5]
+tcell_color <- RColorBrewer::brewer.pal(n = 9, name = "Blues")[5]
+tumor_color <- RColorBrewer::brewer.pal(n = 9, name = "Reds")[5]
+color_celltypes_oi <- sort(setNames(c(caf_color, endo_color, tcell_color, tumor_color, "lightgrey"), c("CAFs", "Endothelial cells", "T cells", "Tumor cells", "Undetermined")))
+```
+
+Generating polygons from cell boundaries for visualization of cells used later for visualizing the segmentation masks.
+
+```{r, generate-polygons-xenium-skin-panel, eval = FALSE}
+# Load segmentation (cell or nuclear boundaries)
+cell_boundaries <- data.table::fread(cell_boundaries_path) %>% data.frame()
+# Create polygons representing the cell type boundaries
+polygons_df <- do.call(
+    rbind,
+    # Create a polygon for each cell
+    parallel::mclapply(cell_boundaries$cell_id %>% unique(),
+        GaitiLabUtils::create_polygon,
+        cell_boundaries = cell_boundaries,
+        mc.cores = 10
+    )
+) %>%
+    arrange(match(cell_id, unique(cell_boundaries$cell_id)))
+
+saveRDS(cell_boundaries, glue("data/processed/{params$sample_id}/{params$sample_id}__polygons.rds"))
+```
+
+## Prepare Gene Panel
+
+Use the gene panel to obtain a list of markers for each of the cell types of interest. 
+
+```{r, prep-panel, eval = FALSE}
+# Load gene panel provided by 10x: https://cdn.10xgenomics.com/raw/upload/v1699308550/software-support/Xenium-panels/hSkin_panel_files/Xenium_hSkin_v1_metadata.csv
+gene_panel <- read.csv(gene_panel_path) %>%
+    separate_longer_delim(Annotation, delim = ";") %>%
+    mutate(SimplifiedAnnotation = case_when(
+        str_detect(Annotation, "Melanoma") ~ "Tumor cells",
+        str_detect(str_to_lower(Annotation), "endothelial") ~ "Endothelial cells",
+        str_detect(str_to_lower(Annotation), "cd4|cd8|t_proliferating|t regulatory") | (str_to_lower(Annotation) == "t cells") ~ "T cells",
+        str_detect(str_to_lower(Annotation), "fibroblast") | str_detect(str_to_lower(Annotation), "caf") ~ "CAFs",
+        .default = NA
+    )) %>%
+    select(Gene, SimplifiedAnnotation) %>%
+    filter(!is.na(SimplifiedAnnotation)) %>%
+    distinct(Gene, SimplifiedAnnotation)
+
+# Save for later use
+saveRDS(gene_panel, "misc/manually_curated_annot_genepanel.rds")
+
+# Count number of markers per cell type of interest
+gene_panel %>%
+    count(SimplifiedAnnotation) %>%
+    print()
+```
+
+## Set paths
+```{r, load-panel}
+# Load generated annotated gene panel (as done in previous chunk)
+gene_panel <- readRDS("misc/manually_curated_annot_genepanel.rds")
+
+# Set paths for sample
+meta_banksy <- glue("data/processed/{params$sample_id}/BANKSY/{params$sample_id}__BANKSY_annotated__metadata.rds")
+meta_raw <- glue("data/processed/{params$sample_id}/{params$sample_id}__raw_metadata.rds")
+output_dir <- glue("{params$output_dir}/{params$sample_id}")
+de_markers_path <- glue("data/processed/{params$sample_id}/BANKSY/{params$sample_id}__DE_markers.rds")
+
+# Annotations
+annot <- glue("misc/{params$sample_id}_annot.xlsx")
+
+# Average expression for heatmaps
+avg_exp_path_pre_annot <- glue("data/processed/{params$sample_id}/BANKSY/{params$sample_id}__mean_exp_by_BANKSY_snn_res.0.5_RNA_scale.data.rds")
+avg_exp_path_post_annot <- glue("data/processed/{params$sample_id}/BANKSY/{params$sample_id}__mean_exp_by_Label_RNA_scale.data.rds")
+
+cell_boundaries_path <- glue("data/ST_melanoma/{params$sample_id}/cell_boundaries.csv.gz")
+
+GaitiLabUtils::create_dir(output_dir)
+```
+
+## QC filtering
+```{r, qc-xenium-skin-panel}
+# Load metadata
+meta_raw <- readRDS(meta_raw)
+meta_w_coords <- readRDS(meta_banksy) %>% mutate(Label = ifelse(Label == "Tumor", "Tumor cells", Label))
+
+print(glue("N cells pre-QC: {meta_raw %>% nrow()}"))
+print(glue("N cells post-QC: {meta_w_coords %>% nrow()}"))
+```
+
+## BANKSY clustering 
+
+The R implementation of BANKSY was used to identify clusters. See code snippet below from `preprocessing/003_banksy.R`. 
+
+Parameters: 
+
+    - lambda = 0.2
+    - features_to_use = "all"
+    - resolution = 0.5
+    - k_geom = 15
+
+```{r, banksy-xenium-skin-panel, eval = FALSE}
+# Run BANKSY
+xenium_obj <- RunBanksy(xenium_obj,
+    lambda = args$lambda, verbose = TRUE,
+    assay = "SCT", slot = "data", features = args$features_to_use,
+    k_geom = args$k_geom, dimx = "x_centroid", dimy = "y_centroid", spatial_mode = "kNN_r"
+)
+
+# Run PCA and UMAP
+# Determine number of optimal PCs
+xenium_obj <- RunPCA(xenium_obj, assay = "BANKSY", features = rownames(xenium_obj), npcs = 50)
+
+npcs <- min(get_pcs(xenium_obj))
+p <- ElbowPlot(xenium_obj, ndims = 50) + geom_vline(xintercept = npcs, lty = "dashed") +
+    annotate("text", x = npcs + 3.5, y = 6, label = glue("Optimal PCs={npcs}"))
+ggsave(plot = p, filename = glue("{args$output_dir}/{params$sample_id}_banksy__elbow_plt.pdf"), height = 5, width = 6)
+log_info(glue("Number of optimal PCs: {npcs}"))
+xenium_obj <- RunUMAP(xenium_obj, dims = 1:npcs)
+
+# Clustering
+#  Find Neighbors
+xenium_obj <- FindNeighbors(xenium_obj, dims = 1:npcs)
+
+# Clustering using Leiden
+xenium_obj <- FindClusters(xenium_obj,
+    resolution = args$cluster_res, algorithm = 4,
+    method = "igraph"
+)
+```
+
+
+## Cell type annotation based on known cell type markers
+
+*Using average expression profiles and DE markers to annotate the clusters identified by BANKSY*
+
+Cell types of interest: 
+- Malignant cells
+- Cancer associated fibroblasts (CAFs)
+- Endothelial cells
+- T cells
+
+Differential expression analysis was done using MAST. 
+
+```{r, dgea, eval = FALSE}
+de_markers <- FindAllMarkers(seurat_obj,
+    test.use = "MAST", assay = "RNA", only.pos = TRUE
+)
+```
+
+Visualize average expression profiles per cluster only using the DE markers. Profiles are computed using Seurat's `AverageExpression` function. 
+
+```{r, avg-exp, eval = FALSE}
+avg_expr <- AverageExpression(seurat_obj,
+    assays = "RNA",
+    layer = "scale.data", group.by = "BANKSY_clusters"
+)[["RNA"]]
+```
+
+
+Use the top-10 DE genes (up to 10 genes) for each cluster and label them based on the manually annotated panel. 
+
+```{r, setup-heatmap}
+# Setup ticks for colorbar
+legend_min <- -2
+legend_mid <- 0
+legend_max <- 2
+
+# Setup colors
+col_fun <- circlize::colorRamp2(
+    # Values
+    c(legend_min, legend_mid, legend_max),
+    # Colors
+    c("#2166AC", "#ffffff", "#B2182B")
+)
+
+lgd <- ComplexHeatmap::Legend(
+    col_fun = col_fun,
+    title = "Mean scaled\nexpression",
+    direction = "horizontal"
+)
+lgd_list <- list(lgd)
+```
+
+```{r, de-markers-xenium-skin-panel}
+# Load average expression
+avg_exp <- readRDS(avg_exp_path_pre_annot) %>%
+    data.matrix() %>%
+    data.frame() %>%
+    rownames_to_column("Gene")
+
+# Load DE markers
+de_markers <- readRDS(de_markers_path) %>%
+    remove_rownames() %>%
+    filter(
+        # Filter based on significance + logfold
+        p_val_adj < 0.05,
+        avg_log2FC > .75
+    ) %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, .Machine$double.xmin, p_val_adj)) %>%
+    mutate(score = -log10(p_val_adj) * avg_log2FC) %>%
+    # 1) A gene can only be a marker for 1 cluster (unique markers), keep gene for cluster with highest score
+    group_by(gene) %>%
+    slice_max(score, n = 1) %>%
+    ungroup() %>%
+    # 2) select top-10
+    group_by(cluster) %>%
+    slice_max(score, n = 10) %>%
+    ungroup() %>%
+    arrange(cluster, desc(score))
+
+de_markers %>%
+    count(cluster) %>%
+    print()
+
+df <- de_markers %>%
+    # Add label
+    left_join(gene_panel, by = c(gene = "Gene")) %>%
+    select(gene, cluster, SimplifiedAnnotation) %>%
+    left_join(avg_exp, by = c(gene = "Gene")) %>%
+    filter(!is.na(SimplifiedAnnotation)) %>%
+    arrange(cluster, SimplifiedAnnotation)
+
+top_annot_df <- df %>% select(gene, SimplifiedAnnotation, cluster)
+mat <- df %>%
+    select(-c(
+        SimplifiedAnnotation, cluster
+    )) %>%
+    t()
+
+colnames(mat) <- mat[1, ]
+mat <- mat[2:nrow(mat), ]
+mat <- mat %>% data.matrix()
+mat <- apply(mat, 2, as.numeric, simplify = TRUE)
+rownames(mat) <- seq_len(nrow(mat))
+
+# Setup gene annotation categories (labels from annotation file)
+top_annot <- ComplexHeatmap::HeatmapAnnotation(
+    Label = top_annot_df %>% pull(SimplifiedAnnotation),
+    col = list(
+        Label = color_celltypes_oi[!is.na(names(color_celltypes_oi))]
+    ),
+    annotation_legend_param = list(
+        Label = list(
+            direction = ifelse(!is.null(top_n), "horizontal", "vertical"),
+            ncol = top_annot_df %>%
+                pull(SimplifiedAnnotation) %>%
+                unique() %>% length(),
+            nrow = 2
+        )
+    )
+)
+
+hm <- GaitiLabUtils::create_hm(mat,
+    cell_width = 5, cell_height = 5, show_column_names = TRUE, show_row_names = TRUE, col = col_fun,
+    column_split = top_annot_df %>% pull(cluster),
+
+    # Font sizes
+    row_names_gp = grid::gpar(fontsize = 12),
+    column_names_gp = grid::gpar(fontsize = 12),
+    column_title_gp = grid::gpar(fontsize = 12),
+    # Dendrograms
+    show_row_dend = TRUE,
+    show_column_dend = TRUE,
+
+    # Clustering
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_heatmap_legend = FALSE,
+    row_title = "Cluster",
+    name = "Mean scaled expression",
+
+    # Annotations
+    top_annotation = top_annot
+)
+
+ComplexHeatmap::draw(hm,
+    heatmap_legend_side = "bottom",
+    annotation_legend_side = "bottom",
+    merge_legend = TRUE, heatmap_legend_list = lgd_list
+)
+
+R.devices::suppressGraphics({
+    # Save heatmap
+    GaitiLabUtils::save_hm(
+        hm_obj = hm, output_file = glue("{output_dir}/{params$sample_id}__DE_heatmap.pdf"),
+        heatmap_legend_side = "bottom", annotation_legend_side = "bottom",
+        merge_legend = TRUE, heatmap_legend_list = lgd_list
+    )
+})
+```
+
+## Spatial Distribution of annotated cells
+
+```{r, spatial-dist-annot-xenium-skin-panel, fig.width = 20, fig.height = 5}
+# Load previously generated polygons
+polygons_df <- readRDS(glue("data/processed/{params$sample_id}/{params$sample_id}__polygons.rds"))
+
+# Add metadata
+# Only keep cells that are kept after QC/preprocessing
+polygons_df <- polygons_df %>%
+    filter(cell_id %in% unique(meta_w_coords$cell_id)) %>%
+    left_join(meta_w_coords, by = "cell_id") %>%
+    mutate(Label = factor(Label, levels = c(sort(names(color_celltypes_oi)[1:4]), "Undetermined")))
+
+p_filled_by_celltype <- ggplot(polygons_df, aes(x = vertex_y, y = vertex_x)) +
+    ggrastr::rasterise(geom_polygon(aes(
+        group = cell_id,
+        # Color by celltypes of interest
+        fill = Label
+    ), show.legend = TRUE, linewidth = 0.15)) +
+    ggh4x::facet_wrap2(Label ~ ., nrow = 1) +
+    ggplot2::labs(
+        x = "X (µm)", y = "Y (µm)"
+    ) +
+    scale_fill_manual(
+        values = color_celltypes_oi,
+        guide = guide_legend(override.aes = list(size = 5, linewidth = 2), title = "Annotation")
+    ) +
+    ggplot2::coord_equal(ratio = 1) +
+    ggplot2::expand_limits(x = 0, y = 0) +
+    # ggplot2::scale_y_reverse(breaks = scales::pretty_breaks()) +
+    GaitiLabUtils::default_theme() +
+    ggplot2::theme(
+        panel.background = ggplot2::element_rect(fill = "black"),
+        aspect.ratio = 1,
+        legend.direction = "horizontal",
+        legend.key = element_rect(fill = "white"), axis.title = element_text(face = "plain")
+    )
+p_filled_by_celltype
+# Save plot
+ggsave(plot = p_filled_by_celltype, filename = glue("{output_dir}/{params$sample_id}__distribution__cell_segmentation_post_annot_by_celltype.pdf"), width = 20, height = 5)
+```
+
+
+## Session Info
+```{r, session-info, echo = FALSE}
+sessionInfo()
+```
+

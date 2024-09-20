@@ -30,8 +30,26 @@ Download the following files and place them in the `data` directory:
 conda env create -f spatial_features.yml
 conda activate spatial_features
 
-# Second, render the notebook
+```
 
-Rscript -e "rmarkdown::render('spatial_features.Rmd, params=list(tcga_bagaev_subtypes = bagaev_file, tcga_survival = tcga_survival_file)')"
+Enter R and install the following packages prior to rendering the notebook.
 
+```r
+# These packages aren't included in the conda environment
+
+install.packages("pak")
+pak::pkg_install(c("tidyverse", "GaitiLab/GaitiLabUtils", "patchwork", "Seurat", "patchwork", "ggplot2", "data.table", "glue", "stringr", "rstatix", "prabhakarlab/Banksy", "satijalab/seurat-wrappers", "ggrastr", "gridExtra" ) )
+
+```
+
+Alternatively, these packages are also loaded through `pacman::p_load` so if package is missing it will automatically be installed.
+
+After installation you can render a notebook as follows in the terminal or using a bash script.
+
+```bash
+
+Rscript -e "rmarkdown::render('analysis/analysis/Fig1de_SuppFig3c_spatial_validation_maps_xenium_skin_panel_w_add_on.Rmd')"
+
+# If you want to run all notebooks, you can run: 
+Rscript -e "analysis/run_notebooks.R"
 ```

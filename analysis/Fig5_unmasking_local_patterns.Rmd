@@ -1,0 +1,225 @@
+---
+title: "Notebook to generate Figure 5: Unmasking local patterns using spatial maps" 
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+author: 
+    - Óscar Lapuente-Santana
+    - Joan Kant
+params: 
+    spatial_features_dir: "data/features_tcga_skcm_FF"
+    tcga_bagaev_subtypes: "data/bagaev_file.xlsx"
+    tcga_survival: "data/tcga_survival_file.xlsx"
+    bootstrap_model: "data/bootstrap_model.RData"
+output:
+    html_document:
+        code_folding: show
+        code_download: true
+        theme: cerulean
+knit: |
+  rmdmatter::renaming_renderer(function(metadata) {
+    with(metadata, paste0(stringr::str_replace_all(title, c(" " = "_", "\\:" = "_")), "-",  format(Sys.time(), "%Y%b%d-%H_%M_%S")))})
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+## Setup 
+
+```{r, notebook-settings, warning=FALSE, message=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+options(knitr.table.format = "html", pillar.sigfig = 10)
+# change default settings to fit plots
+knitr::opts_chunk$set(fig.height = 8, fig.width = 14, warning = FALSE, message = FALSE, cache = TRUE)
+
+pacman::p_load(GaitiLabUtils, data.table, tidyverse, stringr, ggplot2, ggpubr)
+
+# Set working directory
+set_wd()
+
+colors <- c(
+  "darkgreen", "darkblue", "darkorange", "salmon", "darkred",
+  "goldenrod", "gray"
+)
+
+names(colors) <- c(
+  "CAF", "Tcell", "CAF&Tcell", "Tcell&Tumor", "Tumor",
+  "CAF&Tcell&Endo", "other"
+)
+```
+
+## Prepare/format data
+
+```{r, prep-data}
+bagaev_mfp <- readxl::read_xlsx(params$tcga_bagaev_subtypes, sheet = 1, skip = 1)
+bagaev_mfp <- bagaev_mfp %>%
+  dplyr::filter(Cohort == "TCGA-SKCM") %>%
+  rename(TCGA_patient_ID = Sample)
+
+##  Read cell type probabilities
+cell_prob <- data.table::fread(file.path(params$spatial_features_dir, "tcga_validation_tile_predictions_proba.csv"), sep = "\t")
+
+## Pivot to long df
+cell_prob <- cell_prob %>%
+  dplyr::select(slide_submitter_id, CAFs, T_cells, endothelial_cells, tumor_purity, Coord_X, Coord_Y) %>%
+  pivot_longer(
+    cols = !c(slide_submitter_id, Coord_X, Coord_Y),
+    names_to = "celltype", values_to = "prob"
+  )
+
+##  Add bagaev subtypes data
+tmp <- bagaev_mfp %>% dplyr::select(TCGA_patient_ID, MFP)
+cell_prob$TCGA_patient_ID <- substr(cell_prob$slide_submitter_id, 1, 12)
+cell_prob <- inner_join(cell_prob, tmp, by = "TCGA_patient_ID")
+
+cell_prob$sample_submitter_id <- cell_prob$Section <- cell_prob$tile_ID <- NULL
+
+##  Combine cell types
+combined_cell_prob <- cell_prob %>%
+  dplyr::group_by(slide_submitter_id, Coord_X, Coord_Y, celltype, MFP) %>%
+  dplyr::reframe(prob_logic = prob > 0.5) %>%
+  dplyr::mutate(celltype = ifelse(prob_logic, celltype, "other"))
+
+##  Change cell-type names
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype = gsub("T_cells", "Tcell", celltype))
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype = gsub("endothelial_cells", "Endo", celltype))
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype = gsub("tumor_purity", "Tumor", celltype))
+combined_cell_prob <- combined_cell_prob %>%
+  mutate(celltype = gsub("CAFs", "CAF", celltype))
+
+combined_cell_prob$TCGA_patient_ID <- substr(combined_cell_prob$slide_submitter_id, 1, 12)
+
+combined_cell_prob <- combined_cell_prob %>%
+  dplyr::group_by(slide_submitter_id, Coord_X, Coord_Y) %>%
+  dplyr::reframe(celltype_combo = celltype[prob_logic]) %>%
+  dplyr::group_by(slide_submitter_id, Coord_X, Coord_Y) %>%
+  dplyr::reframe(celltype_combo = paste(celltype_combo, collapse = "&"))
+```
+
+## Setup spatial maps
+
+Choosing two slides classified as IE subtypes
+Two slides classified as F subtypes which were predicted to have similar cell type abundance
+
+```{r, vis-prep}
+##  Two IE slides ---
+IE_A <- "TCGA-BF-AAP4-01A-01-TS1" #  scattered
+IE_B <- "TCGA-EE-A2MD-06A-01-TSA" #  confined
+
+## Two FF ---
+F_A <- "TCGA-D3-A1Q8-06A-01-TSA" # 0.53 0.53 0.53 0.47
+F_B <- "TCGA-ER-A19D-06A-01-TSA" # 0.56 0.51 0.51 0.40
+
+sel_celltypes <- c("Tcell", "CAF&Tcell", "CAF", "Tcell&Tumor", "CAF&Tcell&Endo", "Tumor")
+
+combined_cell_prob <- combined_cell_prob %>%
+  dplyr::mutate(celltype_combo_plot = ifelse(celltype_combo %in% sel_celltypes,
+    celltype_combo, "other"
+  ))
+
+examples <- c(IE_A, IE_B, F_A, F_B)
+gg_maps <- lapply(examples, function(X) {
+  example <- cell_prob %>% filter(TCGA_patient_ID %in% substr(X, 1, 12))
+
+  # split data for each "facet"
+  df <- split(example, f = example$celltype)
+
+  plot_CAFs <- df$CAFs %>%
+    ggplot(aes(x = Coord_X, y = -Coord_Y, fill = prob)) +
+    geom_tile(color = "white") +
+    scale_fill_distiller(palette = "Greens", direction = 1, name = "Prob", limits = c(0, 1)) +
+    theme_void() +
+    facet_grid(. ~ slide_submitter_id) +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      legend.title = element_text(size = 16, color = "black"),
+      legend.text = element_text(size = 16, color = "black")
+    ) +
+    coord_fixed(1)
+
+  plot_endo <- df$endothelial_cells %>%
+    ggplot(aes(x = Coord_X, y = -Coord_Y, fill = prob)) +
+    geom_tile(color = "white") +
+    scale_fill_distiller(palette = "Purples", direction = 1, name = "Prob", limits = c(0, 1)) +
+    theme_void() +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      legend.title = element_text(size = 16, color = "black"),
+      legend.text = element_text(size = 16, color = "black")
+    ) +
+    coord_fixed(1)
+
+  plot_tcells <- df$T_cells %>%
+    ggplot(aes(x = Coord_X, y = -Coord_Y, fill = prob)) +
+    geom_tile(color = "white") +
+    scale_fill_distiller(palette = "Blues", direction = 1, name = "Prob", limits = c(0, 1)) +
+    theme_void() +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      legend.title = element_text(size = 16, color = "black"),
+      legend.text = element_text(size = 16, color = "black")
+    ) +
+    coord_fixed(1)
+
+  plot_tumor <- df$tumor_purity %>%
+    ggplot(aes(x = Coord_X, y = -Coord_Y, fill = prob)) +
+    geom_tile(color = "white") +
+    scale_fill_distiller(palette = "Reds", direction = 1, name = "Prob", limits = c(0, 1)) +
+    theme_void() +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      legend.title = element_text(size = 16, color = "black"),
+      legend.text = element_text(size = 16, color = "black")
+    ) +
+    coord_fixed(1)
+
+  plot_combined <- combined_cell_prob %>%
+    filter(slide_submitter_id %in% X) %>%
+    ggplot(aes(x = Coord_X, y = -Coord_Y, fill = celltype_combo_plot)) +
+    geom_tile(color = "white") +
+    scale_fill_manual(values = colors, labels = names(colors)) +
+    theme_void() +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      legend.title = element_text(size = 16, color = "black"),
+      legend.text = element_text(size = 16, color = "black")
+    ) +
+    coord_fixed(1) +
+    labs(fill = "Assigned cell type")
+
+  if (X == examples[4]) {
+    ggarrange(plot_CAFs, plot_endo, plot_tcells, plot_tumor, plot_combined,
+      nrow = 5, ncol = 1, align = "v"
+    )
+  } else {
+    ggarrange(plot_CAFs, plot_endo, plot_tcells, plot_tumor, plot_combined,
+      nrow = 5, ncol = 1, align = "v", legend = "none"
+    )
+  }
+})
+```
+
+## Visualization 
+
+```{r, vis-final,  fig.width = 22, fig.height = 22}
+ggarrange(
+  plotlist = gg_maps,
+  nrow = 1, ncol = 4, align = "h", common.legend = FALSE
+)
+```
+
+## Session Info
+
+```{r, session_info, echo=FALSE}
+options(width = 120)
+sessioninfo::session_info()
+```

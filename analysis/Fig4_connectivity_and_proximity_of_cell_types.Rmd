@@ -1,0 +1,315 @@
+---
+title: "Notebook to generate Figure 4: Connectivity and proximity of cell types" 
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+author: 
+    - Óscar Lapuente-Santana
+    - Joan Kant
+params: 
+    spatial_features_dir: "data/features_tcga_skcm_FF"
+    tcga_bagaev_subtypes: "data/bagaev_file.xlsx"
+    tcga_survival: "data/tcga_survival_file.xlsx"
+    bootstrap_model: "data/bootstrap_model.RData"
+output:
+    html_document:
+        code_folding: show
+        code_download: true
+        theme: cerulean
+knit: |
+  rmdmatter::renaming_renderer(function(metadata) {
+    with(metadata, paste0(stringr::str_replace_all(title, c(" " = "_", "\\:" = "_")), "-",  format(Sys.time(), "%Y%b%d-%H_%M_%S")))})
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+## Setup 
+
+```{r, notebook-settings, warning=FALSE, message=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+options(knitr.table.format = "html", pillar.sigfig = 10)
+# change default settings to fit plots
+knitr::opts_chunk$set(fig.height = 8, fig.width = 14, warning = FALSE, message = FALSE, cache = TRUE)
+
+pacman::p_load(GaitiLabUtils, data.table, tidyverse, stringr, ggplot2, readxl, ggpubr, rstatix)
+
+# Set working directory
+set_wd()
+
+# PLEASE UNCOMMENT WHEN WANTING TO KNIT
+# params <- list()
+# params$spatial_features_dir <- "data/features_tcga_skcm_FF"
+# params$tcga_bagaev_subtypes <- "data/bagaev_file.xlsx"
+
+colors_mfp <- c("#64a860", "#9970c1", "#cc545e", "#b98d3e")
+names(colors_mfp) <- c("D", "F", "IE/F", "IE")
+```
+
+```{r, load-bageav}
+# Load Bagaev file containing the MFP subtypes.
+bagaev_mfp <- readxl::read_xlsx(params$tcga_bagaev_subtypes, sheet = 1, skip = 1)
+bagaev_mfp <- bagaev_mfp %>%
+  dplyr::filter(Cohort == "TCGA-SKCM") %>%
+  rename(TCGA_patient_ID = Sample)
+```
+
+### SP2
+
+Number of shortest paths with maximum path length equal to two (SP2).
+
+```{r, prep-data-sp2}
+# Cell type SP2 -------------------------------------------
+SP2 <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_shortest_paths_thresholded.csv"),
+  sep = "\t"
+)
+
+SP2 <- SP2 %>%
+  dplyr::mutate(TCGA_patient_ID = substr(slide_submitter_id, 1, 12)) %>%
+  dplyr::rename("celltype_pair" = "pair")
+
+#  Change cell-type names
+SP2 <- SP2 %>%
+  mutate(celltype_pair = gsub("T_cells", "Tcell", celltype_pair))
+SP2 <- SP2 %>%
+  mutate(celltype_pair = gsub("endothelial_cells", "Endo", celltype_pair))
+SP2 <- SP2 %>%
+  mutate(celltype_pair = gsub("tumor_purity", "Tumor", celltype_pair))
+SP2 <- SP2 %>%
+  mutate(celltype_pair = gsub("CAFs", "CAF", celltype_pair))
+
+#  Add MFP data
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+SP2$TCGA_patient_ID <- substr(SP2$slide_submitter_id, 1, 12)
+SP2 <- inner_join(SP2, tmp, by = "TCGA_patient_ID")
+SP2$MFP <- factor(SP2$MFP, levels = c("D", "F", "IE/F", "IE"))
+
+##  Pairwise statistical test
+stat.test <- SP2 %>%
+  group_by(celltype_pair) %>%
+  wilcox_test(n_paths ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "celltype_pair", group = "MFP") %>%
+  filter(!p.adj.signif == "ns")
+
+SP2$celltype_pair <- factor(SP2$celltype_pair,
+  levels = unique(test_subtypes$celltype_pair)
+)
+```
+
+```{r, vis-sp2}
+## Plot
+bxpSP2 <- ggpubr::ggboxplot(
+  SP2,
+  x = "celltype_pair", y = "n_paths",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.8, jitter = 0.08)
+) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 16, color = "black"),
+    axis.text.x = element_text(size = 16, color = "black", angle = 45, vjust = 1, hjust = 1),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "top", legend.direction = "horizontal"
+  ) +
+  labs(y = "SP2")
+
+Fig4a <- bxpSP2 +
+  stat_pvalue_manual(test_subtypes, label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+```
+
+### LCC
+
+Size of the largest connected component (LCC) 
+
+```{r, prep-lcc}
+# Cell type LCC -------------------------------------------
+LCC <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_lcc_fraction.csv"),
+  sep = "\t"
+)
+
+## Pivot to longer
+LCC <- LCC %>%
+  pivot_longer(cols = !c("slide_submitter_id"), names_to = "celltype", values_to = "LCC")
+
+##  Change cell-type names
+LCC <- LCC %>%
+  mutate(celltype = gsub(".clusters", "", celltype))
+LCC <- LCC %>%
+  mutate(celltype = gsub("T.cells", "Tcell", celltype))
+LCC <- LCC %>%
+  mutate(celltype = gsub("endothelial.cells", "Endo", celltype))
+LCC <- LCC %>%
+  mutate(celltype = gsub("tumor.purity", "Tumor", celltype))
+LCC <- LCC %>%
+  mutate(celltype = gsub("CAFs", "CAF", celltype))
+LCC <- LCC %>%
+  mutate(celltype = gsub("LCC.", "", celltype))
+
+##  Add Bagev subtypes
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+LCC$TCGA_patient_ID <- substr(LCC$slide_submitter_id, 1, 12)
+LCC <- inner_join(LCC, tmp, by = "TCGA_patient_ID")
+LCC$MFP <- factor(LCC$MFP, levels = c("D", "F", "IE/F", "IE"))
+
+## Factor levels
+LCC$celltype <- factor(LCC$celltype, levels = c("CAF", "Endo", "Tcell", "Tumor"))
+
+##  Pairwise statistical test
+stat.test <- LCC %>%
+  group_by(celltype) %>%
+  wilcox_test(LCC ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "celltype", group = "MFP") %>%
+  filter(!p.adj.signif == "ns")
+
+LCC$celltype <- factor(LCC$celltype, levels = unique(test_subtypes$celltype))
+```
+
+```{r, vis-lcc}
+# Create a box plot
+bxp_LCC <- ggpubr::ggboxplot(
+  LCC,
+  x = "celltype", y = "LCC",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.8, jitter = 0.08)
+) +
+  theme_minimal() +
+  scale_x_discrete(labels = c("CAFs", "Endo cells", "T cells", "Tumor cells")) +
+  theme(
+    axis.text.y = element_text(size = 16, color = "black"),
+    axis.text.x = element_text(size = 16, color = "black", angle = 0),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "top", legend.direction = "horizontal"
+  ) +
+  labs(y = "LCC")
+
+Fig4b <- bxp_LCC +
+  stat_pvalue_manual(test_subtypes, label = "p.adj.signif", label.size = 5, tip.length = 0.01)
+```
+
+### Proximity between cell type specific clusters
+
+Proximity between cell type-specific clusters classified as highly or lowly abundant.
+
+```{r, prep-prox-clust}
+# Cell type Proximity of clusters -------------------------------------------
+prox_clust <- data.table::fread(
+  file = file.path(params$spatial_features_dir, "FF_features_clust_indiv_schc_prox.csv"),
+  sep = "\t"
+)
+
+##  Add Bagaev subtypes
+tmp <- bagaev_mfp %>% select(TCGA_patient_ID, MFP)
+prox_clust$TCGA_patient_ID <- substr(prox_clust$slide_submitter_id, 1, 12)
+prox_clust <- inner_join(prox_clust, tmp, by = "TCGA_patient_ID")
+
+prox_clust <- prox_clust %>%
+  dplyr::rename(pair = `pair (comparison)`) %>%
+  dplyr::select(slide_submitter_id, pair, proximity, TCGA_patient_ID, MFP)
+
+prox_clust <- prox_clust %>%
+  mutate(pair = gsub("tumor_purity", "Tumor", pair))
+prox_clust <- prox_clust %>%
+  mutate(pair = gsub("CAFs", "CAF", pair))
+prox_clust <- prox_clust %>%
+  mutate(pair = gsub("endothelial_cells", "Endo", pair))
+prox_clust <- prox_clust %>%
+  mutate(pair = gsub("T_cells", "Tcell", pair))
+
+prox_clust <- prox_clust[-grep("(low-low)", prox_clust$pair), ]
+prox_clust$pair <- gsub("high", "H", prox_clust$pair)
+prox_clust$pair <- gsub("low", "L", prox_clust$pair)
+
+newlevels <- c(
+  "CAF-CAF (L-H)", "CAF-CAF (H-H)",
+  "CAF-Endo (L-H)", "CAF-Endo (H-H)", "CAF-Endo (H-L)",
+  "CAF-Tcell (L-H)", "CAF-Tcell (H-H)", "CAF-Tcell (H-L)",
+  "CAF-Tumor (L-H)", "CAF-Tumor (H-H)", "CAF-Tumor (H-L)",
+  "Endo-Endo (L-H)", "Endo-Endo (H-H)",
+  "Tcell-Endo (L-H)", "Tcell-Endo (H-H)", "Tcell-Endo (H-L)",
+  "Endo-Tumor (L-H)", "Endo-Tumor (H-H)", "Endo-Tumor (H-L)",
+  "Tcell-Tcell (L-H)", "Tcell-Tcell (H-H)",
+  "Tcell-Tumor (L-H)", "Tcell-Tumor (H-H)", "Tcell-Tumor (H-L)",
+  "Tumor-Tumor (L-H)", "Tumor-Tumor (H-H)"
+)
+
+prox_clust$pair <- factor(prox_clust$pair, levels = newlevels)
+
+##  Pairwise statistical test
+stat.test <- prox_clust %>%
+  group_by(pair) %>%
+  wilcox_test(proximity ~ MFP) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+
+## Add p-values onto the box plots
+test_subtypes <- stat.test %>%
+  add_xy_position(x = "pair", group = "MFP")
+
+##  Factor levels
+prox_clust$pair <- factor(prox_clust$pair, levels = unique(test_subtypes$pair))
+```
+
+```{r, vis-prox-clust}
+## Plot
+bxp_prox_clust <- ggpubr::ggboxplot(
+  prox_clust,
+  x = "pair", y = "proximity",
+  fill = "MFP", color = "MFP", alpha = 0.8, palette = colors_mfp,
+  add = "jitter", add.params = list(size = 0.4, jitter = 0.08)
+) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 16, color = "black"),
+    axis.text.x = element_text(size = 16, color = "black", angle = 45, hjust = 1),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "top", legend.direction = "horizontal"
+  ) +
+  labs(y = "Proximity of clusters")
+
+Fig4c <- bxp_prox_clust +
+  stat_pvalue_manual(subset(test_subtypes, !p.adj.signif == "ns"),
+    label = "p.adj.signif", label.size = 5, tip.length = 0.01
+  )
+```
+
+### Visualization 
+
+```{r, vis-combine,  fig.width = 12, fig.height = 12}
+##  Combine first two panels
+pt_1 <- ggarrange(Fig4a,
+  Fig4b,
+  nrow = 1, ncol = 2, align = "v", widths = c(1, 1),
+  common.legend = TRUE
+)
+
+##  Combine last panel
+ggarrange(pt_1,
+  Fig4c,
+  nrow = 2, ncol = 1, align = "v", widths = c(0.5, 1),
+  legend = "none"
+)
+```
+
+
+## Session Info
+
+```{r, session_info, echo=FALSE}
+options(width = 120)
+sessioninfo::session_info()
+```
