@@ -9,7 +9,7 @@ dependencies:
   - r-readxl
   - r-ggforce
   - r-ggpubr
-  - bioconductor-complexheatmap
+  - bioconda::bioconductor-complexheatmap
   - conda-forge::r-ggfortify
   - conda-forge::r-survminer
   - conda-forge::r-gtsummary
@@ -17,4 +17,4 @@ dependencies:
   - conda-forge::r-glmnet
   - conda-forge::r-prroc
   - conda-forge::r-rmarkdown
-  - pacman
+  - r-pacman

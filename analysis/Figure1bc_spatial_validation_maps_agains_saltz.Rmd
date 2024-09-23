@@ -1,0 +1,426 @@
+---
+title: "Notebook to generate Figure 1bc: Quantitative evaluation of Saltz and SPoTLIghT TIL maps"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+author: "Óscar Lapuente-Santana"
+params: 
+    spatial_features_dir_ffpe: "./data/features_tcga_skcm_FFPE"
+    saltz_maps_folder: "./data/saltz_cluster_assignments/skcm"
+output:
+    html_document:
+        code_folding: show
+        code_download: true
+        theme: cerulean
+---
+  <style type="text/css">
+  .smaller {
+    font-size: 10px
+    font-style: normal
+  }
+</style>
+
+## Setup
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_knit$set(root.dir = "../")
+options(knitr.table.format = "html", pillar.sigfig = 10)
+
+# Unload all previously loaded packages + remove previous environment
+pacman::p_load(GaitiLabUtils, glue, data.table, tidyverse, stringr, patchwork, ggplot2)
+
+# Color palette for cell types of interest
+caf_color <- RColorBrewer::brewer.pal(n = 9, name = "Greens")[5]
+endo_color <- RColorBrewer::brewer.pal(n = 9, name = "Purples")[5]
+tcell_color <- RColorBrewer::brewer.pal(n = 9, name = "Blues")[5]
+tumor_color <- RColorBrewer::brewer.pal(n = 9, name = "Reds")[5]
+color_celltypes_oi <- sort(setNames(c(caf_color, endo_color, tcell_color, tumor_color, "lightgrey"), c("CAFs", "Endothelial cells", "T cells", "Tumor cells", "Undetermined")))
+color_palettes_celltypes_oi <- setNames(c("Greens", "Purples", "Blues", "Reds"), c("CAFs", "Endothelial cells", "T cells", "Tumor cells"))
+
+# Similarity functions
+jaccard <- function(a, b) {
+  a_tmp <- a[a==1 | a==2]
+  b_tmp <- b[b==1 | b==2]
+  res <- table(a_tmp - b_tmp)
+  intersection = res["0"]
+  union = length(a_tmp) + length(b_tmp) - intersection
+  return (intersection/union)
+}
+
+dice <- function(a,b){
+  a_tmp <- a[a==1 | a==2]
+  b_tmp <- b[b==1 | b==2]
+  res <- table(a_tmp - b_tmp)
+  intersection = res["0"]
+  numerator = 2*intersection
+  denominator = length(a_tmp) + length(b_tmp)
+  return (numerator/denominator)
+}
+```
+
+## Load TIL maps from SPoTLIghT and Saltz
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+###############
+## SPoTLIghT ##
+###############
+
+##  Read cell type probabilities
+cell_prob <- data.table::fread(
+  file = file.path(
+    params$spatial_features_dir_ffpe,
+    "tcga_train_validation_tile_predictions_proba.csv"
+  ),
+  sep = "\t"
+)
+
+## Pivot to long df
+cell_prob <- cell_prob %>%
+  dplyr::select(slide_submitter_id, CAFs, T_cells, endothelial_cells, tumor_purity, Coord_X, Coord_Y) %>%
+  tidyr::pivot_longer(
+    cols = !c(slide_submitter_id, Coord_X, Coord_Y),
+    names_to = "celltype", values_to = "prob"
+  )
+
+## Keep just TILs
+cell_prob_TILs_spotlight <- cell_prob %>%
+  dplyr::filter(celltype == "T_cells") %>%
+  dplyr::mutate(cluster_id = prob > 0.5)
+
+###############
+## Saltz ##
+###############
+
+## path to saltz TIL maps
+saltz_maps <- dir(params$saltz_maps_folder, full.names = TRUE)
+
+## read all images TIL maps
+cell_prob_TILs_saltz <- lapply(saltz_maps, function(X){
+  tmp <- data.table::fread(X)
+  tmp2 <- sapply(strsplit(X, "/"), function(Y) return(Y[5]))
+  tmp$slide_submitter_id <-  sapply(strsplit(tmp2, "_"), head, 1)
+  return(as.data.frame(tmp))
+})
+
+## to data.frame
+cell_prob_TILs_saltz <- reshape2::melt(cell_prob_TILs_saltz)
+
+cell_prob_TILs_saltz <- cell_prob_TILs_saltz %>%
+  dplyr::select(slide_submitter_id, variable, value) %>%
+  tidyr::pivot_wider(names_from = "variable", values_from = "value")
+
+cell_prob_TILs_saltz <- cell_prob_TILs_saltz %>% 
+  dplyr::group_by(slide_submitter_id) %>%
+  tidyr::unnest(y,x, cluster_id)
+
+cell_prob_TILs_saltz <- cell_prob_TILs_saltz %>%
+  dplyr::select(x, y, cluster_id) %>%
+  dplyr::rename("Coord_X" = "x",
+                "Coord_Y" = "y",) %>%
+  dplyr::mutate(celltype = "T_cells",
+                cluster_id = TRUE) %>%
+  dplyr::select(Coord_X, Coord_Y, celltype, cluster_id)
+
+```
+
+## Compute Jaccard and Dice similarity
+
+- Saltz: 50um x 50 um -sized tiles (100x100 pixels), 20x magnification
+
+- Fu: 256 um x 256 um -sized tiles (512x512 pixels), 20x magnification
+
+> 1. Re-sizing images and interpolation
+
+> 2. Compute similarity metrics
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+all_slides <- intersect(unique(cell_prob_TILs_saltz$slide_submitter_id),
+                        unique(cell_prob_TILs_spotlight$slide_submitter_id))
+
+perf_TIL_maps <- lapply(all_slides, function(X){
+  
+  ## spotlight
+  tmp_hat <- cell_prob_TILs_spotlight %>%
+    dplyr::filter(slide_submitter_id %in% X)
+  
+  tmp_hat$cluster_id <- gsub(FALSE, 1, tmp_hat$cluster_id)
+  tmp_hat$cluster_id <- gsub(TRUE, 2, tmp_hat$cluster_id)
+  
+  tmp_hat[,c(2,3,5,6)] <- apply(tmp_hat[,c(2,3,5,6)], 2, as.numeric)
+  
+  mat_hat <- tmp_hat %>% 
+    tidyr::pivot_wider(id_cols = "Coord_Y", 
+                       names_from = "Coord_X", 
+                       values_from = "cluster_id",
+                       values_fill = 0) %>%
+    tibble::column_to_rownames(var = "Coord_Y")
+  
+  idx <- as.character(sort(as.numeric(colnames(mat_hat))))
+  idy <- as.character(sort(as.numeric(rownames(mat_hat))))
+  
+  mat_hat <- mat_hat[idy, idx]
+  
+  ## saltz et al.
+  tmp_saltz <- cell_prob_TILs_saltz %>%
+    dplyr::filter(slide_submitter_id %in% X)
+  
+  tmp_saltz$cluster_id <- gsub(FALSE, 1, tmp_saltz$cluster_id)
+  tmp_saltz$cluster_id <- gsub(TRUE, 2, tmp_saltz$cluster_id)
+  
+  tmp_saltz[,c(2,3,5)] <- apply(tmp_saltz[,c(2,3,5)], 2, as.numeric)
+  
+  mat_saltz <- tmp_saltz %>% 
+    tidyr::pivot_wider(id_cols = "Coord_Y", 
+                       names_from = "Coord_X", 
+                       values_from = "cluster_id",
+                       values_fill = 0) %>%
+    tibble::column_to_rownames(var = "Coord_Y")
+  
+  idx <- as.character(sort(as.numeric(colnames(mat_saltz))))
+  idy <- as.character(sort(as.numeric(rownames(mat_saltz))))
+  
+  mat_saltz <- mat_saltz[idy, idx]
+  
+  ## Re-size spotlight map to saltz dimensions --
+  m <- as.matrix(mat_hat)
+  
+  ## Convert matrix to a raster with geographical coordinates
+  r <- raster::raster(m)
+  raster::extent(r) <- raster::extent(c(-180, 180, -90, 90))
+  
+  ## Create a raster with the desired dimensions, and resample into it
+  s <- raster::raster(nrow=dim(mat_saltz)[1], ncol=dim(mat_saltz)[2])
+  s <- raster::resample(r,s, method= "ngb")
+  
+  ## Convert resampled raster back to a matrix
+  m2 <- raster::as.matrix(s)
+  rownames(m2) <- rownames(mat_saltz)
+  colnames(m2) <- colnames(mat_saltz)
+  
+  m2_df <- m2 %>% 
+    as.data.frame() %>%
+    tibble::rownames_to_column(var = "Coord_Y") %>%
+    tidyr::pivot_longer(cols = !Coord_Y, names_to = "Coord_X", values_to = "cluster_id")
+  
+  mat_saltz <- as.matrix(mat_saltz)
+  
+  m_df <- mat_saltz %>% 
+    as.data.frame() %>%
+    tibble::rownames_to_column(var = "Coord_Y") %>%
+    tidyr::pivot_longer(cols = !Coord_Y, names_to = "Coord_X", values_to = "cluster_id")
+  
+  ## Add tissue context to saltz slides
+  m3_df <- m2_df
+  m3_df$cluster_id <- gsub(2, 1, m2_df$cluster_id) # spotlight TILs to tissue
+  m3_df$cluster_id[m_df$cluster_id == 2] <- 2 # Set Saltz TILs
+  m3_df$cluster_id[which(m2_df$cluster_id == 0)] <- 0 # Set background for Saltz TILs out of the tissue
+  
+  return(list(saltz_df = m3_df,
+              interpolated_spotlight_df = m2_df,
+              jaccard_index = jaccard(as.numeric(m2_df$cluster_id), as.numeric(m3_df$cluster_id)), 
+              dice_coef = dice(as.numeric(m2_df$cluster_id), as.numeric(m3_df$cluster_id))
+  )
+  )
+  
+})
+names(perf_TIL_maps) <- all_slides
+
+```
+
+
+## Figure 1b - Three examples of qualitative comparison of Saltz and SPoTLIghT tumor-infiltrating lymphocytes (TIL) maps
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 20, fig.height = 10}
+
+## illustrative examples
+
+#### 1. ####
+X1 <-  "TCGA-D3-A2JF-06Z-00-DX1"
+
+tmp <- perf_TIL_maps[[X1]]$saltz_df %>%
+  dplyr::mutate(Coord_X = as.numeric(Coord_X),
+                Coord_Y = as.numeric(Coord_Y))
+ 
+tmp$cluster_id <- factor(tmp$cluster_id, levels = c(0,1,2))
+
+X1_plot_saltz <- tmp %>%
+  ggplot(aes(x = as.numeric(Coord_X), y = -as.numeric(Coord_Y), fill = as.factor(cluster_id))) +
+  geom_tile(width = 4, height = 4) +
+  scale_fill_manual(values = c("black", "blue", "red")) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 16, color = "black"),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "black"),
+  ) +
+  coord_fixed(1) +
+  guides(fill = "none") +
+  ggtitle(label = paste0("Saltz TIL map: ", X1))
+
+tmp <- perf_TIL_maps[[X1]]$interpolated_spotlight_df %>%
+  dplyr::mutate(Coord_X = as.numeric(Coord_X),
+                Coord_Y = as.numeric(Coord_Y))
+ 
+tmp$cluster_id <- factor(tmp$cluster_id, levels = c(0,1,2))
+
+X1_plot_spotlight <- tmp %>%
+  ggplot(aes(x = as.numeric(Coord_X), y = -as.numeric(Coord_Y), fill = as.factor(cluster_id))) +
+  geom_tile(width = 4, height = 4) +
+  scale_fill_manual(values = c("black", "blue", "red")) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 16, color = "black"),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "black"),
+  ) +
+  coord_fixed(1) +
+  guides(fill = "none") +
+  ggtitle(label = paste0("SPoTLIghT TIL map: ", X1))
+
+#### 2. ####
+
+X2 <-  "TCGA-DA-A1HV-01Z-00-DX1"
+
+tmp <- perf_TIL_maps[[X2]]$saltz_df %>%
+  dplyr::mutate(Coord_X = as.numeric(Coord_X),
+                Coord_Y = as.numeric(Coord_Y))
+ 
+tmp$cluster_id <- factor(tmp$cluster_id, levels = c(0,1,2))
+
+X2_plot_saltz <- tmp %>%
+  ggplot(aes(x = as.numeric(Coord_X), y = -as.numeric(Coord_Y), fill = as.factor(cluster_id))) +
+  geom_tile(width = 4, height = 4) +
+  scale_fill_manual(values = c("black", "blue", "red")) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 16, color = "black"),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "black"),
+  ) +
+  coord_fixed(1) +
+  guides(fill = "none") +
+  ggtitle(label = paste0("Saltz TIL map: ", X2))
+
+tmp <- perf_TIL_maps[[X2]]$interpolated_spotlight_df %>%
+  dplyr::mutate(Coord_X = as.numeric(Coord_X),
+                Coord_Y = as.numeric(Coord_Y))
+ 
+tmp$cluster_id <- factor(tmp$cluster_id, levels = c(0,1,2))
+
+X2_plot_spotlight <- tmp %>%
+  ggplot(aes(x = as.numeric(Coord_X), y = -as.numeric(Coord_Y), fill = as.factor(cluster_id))) +
+  geom_tile(width = 4, height = 4) +
+  scale_fill_manual(values = c("black", "blue", "red")) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 16, color = "black"),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "black"),
+  ) +
+  coord_fixed(1) +
+  guides(fill = "none") +
+  ggtitle(label = paste0("SPoTLIghT TIL map: ", X2))
+
+#### 3. ####
+
+X3 <-  "TCGA-GN-A9SD-06Z-00-DX1"
+
+tmp <- perf_TIL_maps[[X3]]$saltz_df %>%
+  dplyr::mutate(Coord_X = as.numeric(Coord_X),
+                Coord_Y = as.numeric(Coord_Y))
+ 
+tmp$cluster_id <- factor(tmp$cluster_id, levels = c(0,1,2))
+
+X3_plot_saltz <- tmp %>%
+  ggplot(aes(x = as.numeric(Coord_X), y = -as.numeric(Coord_Y), fill = as.factor(cluster_id))) +
+  geom_tile(width = 4, height = 4) +
+  scale_fill_manual(values = c("black", "blue", "red")) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 16, color = "black"),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "black"),
+  ) +
+  coord_fixed(1) +
+  guides(fill = "none")  +
+  ggtitle(label = paste0("Saltz TIL map: ", X3))
+
+tmp <- perf_TIL_maps[[X3]]$interpolated_spotlight_df %>%
+  dplyr::mutate(Coord_X = as.numeric(Coord_X),
+                Coord_Y = as.numeric(Coord_Y))
+ 
+tmp$cluster_id <- factor(tmp$cluster_id, levels = c(0,1,2))
+
+X3_plot_spotlight <- tmp %>%
+  ggplot(aes(x = as.numeric(Coord_X), y = -as.numeric(Coord_Y), fill = as.factor(cluster_id))) +
+  geom_tile(width = 4, height = 4) +
+  scale_fill_manual(values = c("black", "blue", "red")) +
+  theme_minimal() +
+  theme(
+    axis.title =element_text(size = 16, color = "black"),
+    axis.text = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "black"),
+  ) +
+  coord_fixed(1) +
+  guides(fill = "none")  +
+  ggtitle(label = paste0("SPoTLIghT TIL map: ", X3))
+
+
+ggpubr::ggarrange(X1_plot_saltz, X1_plot_spotlight, 
+                  X2_plot_saltz, X2_plot_spotlight, 
+                  X3_plot_saltz, X3_plot_spotlight,
+                  nrow = 3, ncol = 2, align = "hv")
+```
+
+
+## Figure 1c - Quantitative evaluation of Saltz and SPoTLIghT TIL maps in terms of Dice and Jaccard similarity coefficients across 334 FFPE melanoma slides from TCGA.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width = 4, fig.height = 6}
+
+## get performances
+tmp <- lapply(perf_TIL_maps, function(X) return(X[3:4]))
+
+perf_TIL_maps_df <- reshape2::melt(tmp)
+perf_TIL_maps_df <- perf_TIL_maps_df %>%
+  dplyr::filter(L1 != "slide_submitter_id") %>%
+  dplyr::rename("slide_submitter_id" = "L1",
+                "metric" = "L2"
+  ) %>%
+  dplyr::mutate(value=as.numeric(value))
+
+## plot
+perf_plot <- perf_TIL_maps_df %>%
+  ggplot(aes(x = metric, y = value, fill = metric, color = metric, alpha = 0.95)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("lightgreen", "darkgreen")) +
+  scale_color_manual(values = c("lightgreen", "darkgreen")) +
+  scale_x_discrete(labels = c("Dice coefficient", "Jaccard Index")) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 16, color = "black"),
+    axis.text.x = element_text(size = 16, color = "black", angle = 0),
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "none"
+  ) +
+  labs(y = "Similarity value") +
+  guides(fill = "none") +
+  ylim(c(0,1))
+
+perf_plot
+
+```
+
+

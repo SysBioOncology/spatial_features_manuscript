@@ -4,6 +4,7 @@
 .lintr
 .Renviron
 .vscode
+.Rhistory
 data/mmc1.xlsx
 data/mmc6.xlsx
 
@@ -15,6 +16,9 @@ tcga_survival_file.xlsx
 data/processed
 data/xenium_*
 data/ST_melanoma
+
+# Do not add Saltz TIL maps
+data/saltz_cluster_assignments
 
 # Do not keep logs
 slurm_out
