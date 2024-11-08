@@ -1,11 +1,12 @@
-# Integrating histopathology and transcriptomics for spatial profiling of the tumor microenvironment: a melanoma case study
+# Integrating histopathology and transcriptomics for spatial tumor microenvironment profiling in a melanoma case study
 
 This repository holds the code for all analyses related to
 
-> t.b.a
+> Lapuente-Santana, Ó., Kant, J. & Eduati, F. Integrating histopathology and transcriptomics for spatial tumor microenvironment profiling in a melanoma case study. npj Precis. Onc. 8, 254 (2024). https://doi.org/10.1038/s41698-024-00749-w
+
 
 Our pipeline (SPoTLIghT) to derive spatial graph-based interpretable features from H&E tissue slides is packaged as a docker container, which is available here:
-https://github.com/SysBioOncology/spotlight_docker.
+[https://github.com/SysBioOncology/SPoTLIghT](https://github.com/SysBioOncology/SPoTLIghT).
 
 ## Spatial features for used cohorts
 
